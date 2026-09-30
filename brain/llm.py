@@ -910,6 +910,30 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                 "7. 不调工具。"
                 "8. 你没有眼睛和耳朵。永远不说'我看到''我听到'。"
             )
+        # 时间感 A：跨轮间隔
+        _gap = getattr(s, "last_turn_gap", 0)
+        if _gap >= 60:
+            if _gap < 3600:
+                sysc += f"\n\n【对话节奏】距离上一轮过去了 {int(_gap/60)} 分钟。"
+            elif _gap < 86400:
+                sysc += f"\n\n【对话节奏】距离上一轮过去了 {int(_gap/3600)} 小时，隔了挺久。"
+            else:
+                sysc += f"\n\n【对话节奏】距离上一轮过去了 {int(_gap/86400)} 天，好久没见了。"
+
+        # L1：让她"看到"自己上一句
+        last_self = ""
+        for _m in reversed(history):
+            if _m.get("role") == "assistant" and _m.get("content"):
+                last_self = _m["content"].strip()
+                break
+        if last_self and len(last_self) >= 2:
+            sysc += (
+                f"\n\n【你上一句说】\"{last_self}\""
+                f"\n如果当前话题和上一句有关，可以自然接续，不要重复。"
+                f"\n如果对方说'还有吗''别的呢''继续'，是要新的信息，"
+                f"\n不要重复你上一句说过的内容。"
+            )
+    
         msgs = [{"role": "system", "content": sysc}] + rh + [um]
         try:
             r = client.chat.completions.create(
