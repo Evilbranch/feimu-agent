@@ -10,7 +10,7 @@
 import json
 import time
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 from core import state
 
@@ -204,7 +204,7 @@ def _handle_wechat_message(text):
 def start():
     """启动 HTTP 服务（后台线程）"""
     try:
-        server = HTTPServer((HOST, PORT), _Handler)
+        server = ThreadingHTTPServer((HOST, PORT), _Handler)
     except OSError as e:
         print(f"[API] ⚠️ 启动失败（端口 {PORT} 可能被占）: {e}")
         return None

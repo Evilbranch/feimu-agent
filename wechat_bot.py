@@ -35,6 +35,7 @@ OUTBOX_MAX = 50
 OUTBOX_TTL = 24 * 3600
 
 _last_user_id = [None]
+_context_tokens = {}   # user_id -> context_token（主动发送必需）
 _msg_lock = threading.Lock()
 _outbox_lock = threading.Lock()
 
@@ -54,7 +55,7 @@ _RESEND_PREFIX = ["刚刚没看见你消息，抱歉…", "还有你这条…", 
 def _health():
     """返回 (online, brain_ready)"""
     try:
-        r = requests.get(f"{BRAIN_URL}/health", timeout=2)
+        r = requests.get(f"{BRAIN_URL}/health", timeout=3)
         if r.status_code != 200:
             return False, False
         d = r.json()
@@ -69,7 +70,7 @@ def _post_chat(text, user_id):
         r = requests.post(
             f"{BRAIN_URL}/chat",
             json={"text": text, "user_id": user_id},
-            timeout=120,
+            timeout=180,
         )
         if r.status_code != 200:
             print(f"[微信→大脑] HTTP {r.status_code}: {r.text[:100]}")
@@ -90,6 +91,26 @@ def _fetch_pending():
         return r.json().get("items", [])
     except Exception:
         return []
+
+
+# ══════════════════════════════════════════════════════════════
+# 发送（带 context_token）
+# ══════════════════════════════════════════════════════════════
+def _send_to_user(bot, user_id, text):
+    """统一的发送函数：带 context_token"""
+    if not user_id or user_id == "unknown":
+        print(f"[send] 无效 user_id: {user_id}")
+        return False
+    ctx = _context_tokens.get(user_id)
+    if not ctx:
+        print(f"[send] 没有 {user_id} 的 context_token，无法发送")
+        return False
+    try:
+        bot.send_text(to=user_id, text=text, context_token=ctx)
+        return True
+    except Exception as e:
+        print(f"[send] 发送失败: {e}")
+        return False
 
 
 # ══════════════════════════════════════════════════════════════
@@ -171,11 +192,12 @@ def _worker_resend(bot, stop_event):
             prefix = _RESEND_PREFIX[min(idx, 2)]
             full = f"{prefix}\n{reply}"
             idx += 1
-            try:
-                bot.send_text(to=user_id, text=full)
+            if _send_to_user(bot, user_id, full):
                 print(f"[补发] {full[:60]}")
-            except Exception as e:
-                print(f"[补发] 发送失败: {e}")
+            else:
+                # 发送失败，塞回队列
+                _requeue_outbox_front(item)
+                break
             time.sleep(1)
 
 
@@ -198,11 +220,10 @@ def _worker_pending(bot, stop_event):
             msg = item.get("msg") or ""
             if not msg:
                 continue
-            try:
-                bot.send_text(to=user_id, text=msg)
+            if _send_to_user(bot, user_id, msg):
                 print(f"[主动] 已推微信: {msg[:40]}")
-            except Exception as e:
-                print(f"[主动] 推送失败: {e}")
+            else:
+                print(f"[主动] 推送失败（无 token？）: {msg[:40]}")
             time.sleep(0.5)
 
 
@@ -224,7 +245,6 @@ def main():
         print("[微信] 首次登录，请扫码...")
         bot = WeixinBot.from_login(save_to=creds_path)
 
-    # 探测电脑端
     ok, ready = _health()
     if ok and ready:
         print(f"[大脑] ✅ 电脑端在线 ({BRAIN_URL})")
@@ -243,10 +263,12 @@ def main():
         if not _msg_lock.acquire(blocking=False):
             return
         try:
-            user_id = (getattr(msg, "sender", None)
-                       or getattr(msg, "user_id", None)
-                       or "unknown")
+            user_id = getattr(msg, "from_user", None) or "unknown"
+            ctx_token = getattr(msg, "context_token", None)
+            if user_id and user_id != "unknown" and ctx_token:
+                _context_tokens[user_id] = ctx_token
             _last_user_id[0] = user_id
+
             ui = (msg.text or "").strip()
             if not ui:
                 return
