@@ -11,6 +11,7 @@ import signal as _signal
 import threading
 import re as _re
 import random
+from core import api_server
 
 from core import state, constants
 from core.logger import (logger, save_crash_report, check_last_crash,
@@ -563,6 +564,10 @@ def main():
     cooldown = 0; conv_until = 0
 
     async def life_loop():
+            # 启动 HTTP 服务
+        api_server.set_context(client, provider, history, session_start)
+        api_server.start()
+        print("[API] 已注册上下文")
         while not s.shutdown_flag.is_set():
             if s.life_sim: s.life_sim.update()
             if s.mood_mgr: s.mood_mgr.tick()

@@ -43,6 +43,9 @@ class State:
         self.proactive_queue = []
         self.proactive_queue_lock = threading.Lock()
         self.recent_proactive_msgs = []
+        self.wechat_pending = []
+        self.last_active_channel = "local"
+        self.last_active_channel_time = 0.0
 
 
 _state = None

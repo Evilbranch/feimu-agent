@@ -57,7 +57,7 @@ def apply_own_speech_impact(text, source="owner"):
 
     只对 owner 生效。变化极小，被"连续同向"阻尼。
     """
-    if source != "owner":
+    if source not in ("owner", "wechat"):
         return
     if not text or len(text) < 2:
         return
