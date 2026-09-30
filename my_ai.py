@@ -342,6 +342,28 @@ def handle_slash_command(ui, s):
         except Exception as e:
             print(f"[内在] 读取失败: {e}")
         return True
+    elif cmd in ["episodes", "情景", "记忆片段"]:
+        try:
+            from brain.episodic import retrieve_episodes
+            eps = retrieve_episodes(query=None, top_k=10, days_back=7, min_importance=0.0)
+            if not eps:
+                print("\n（最近 7 天没有情景记忆）\n")
+                return True
+            print(f"\n=== 最近 7 天的情景记忆（{len(eps)} 条）===")
+            for e in eps:
+                day = e.get("day", "")
+                content = e.get("content", "")
+                etype = e.get("event_type", "")
+                imp = e.get("importance", 0)
+                self_emo = e.get("self_emotion", {}).get("label", "")
+                print(f"  [{day}] {etype:12s} imp={imp:.2f}")
+                print(f"    {content[:60]}")
+                if self_emo and self_emo != "平静":
+                    print(f"    （我当时{self_emo}）")
+            print("====================================\n")
+        except Exception as e:
+            print(f"[情景] 读取失败: {e}")
+        return True
     elif cmd in ["help", "帮助"]:
         print("\n=== 可用命令 ===")
         print("  /mute        - 静音")
@@ -359,6 +381,7 @@ def handle_slash_command(ui, s):
         print("  /preferences - 查看她的偏好")
         print("  /reflect     - 手动触发反思")
         print("  /inner       - 查看她最近在想什么")
+        print("  /episodes    - 查看最近 7 天的情景记忆")
         print("  /quit        - 退出程序")
         print("  \"\"\"          - 多行输入")
         print("================\n")
@@ -518,7 +541,6 @@ def main():
 
         _ensure_tts_api()
 
-        # 预热 TTS 模型（首次合成要 20~30 秒加载）
         def _warmup_tts():
             try:
                 print("[TTS] 预热中（首次需 20~30 秒）...")
@@ -563,6 +585,119 @@ def main():
     session_start = time.time()
     cooldown = 0; conv_until = 0
 
+    # ══════════════════════════════════════════════════════
+    # L2/L4 异步执行 —— 后台线程处理，不阻塞主循环
+    # ══════════════════════════════════════════════════════
+    _pending_reflections = queue.Queue()
+
+    def _maybe_record_episode(user_msg, reply, src):
+        """判断这轮是否值得写入情景记忆（正则规则，不调 LLM）"""
+        if not user_msg or not reply:
+            return
+
+        import re as _re
+
+        # 用正则替代关键词精确匹配，允许"我"和动词之间插词
+        _user_fact_patterns = [
+            r"我.{0,4}住",                          # 我住 / 我现在住 / 我在杭州住
+            r"我.{0,6}(去过|到过)",                  # 我去过 / 我之前去过
+            r"我.{0,4}(养|有)过",                    # 我养过 / 我有个
+            r"我.{0,6}小时候",
+            r"我.{0,4}(喜欢|讨厌|不爱)",
+            r"我.{0,4}(上学|大学|高中|初中|小学)",
+            r"我.{0,4}(工作|同事|老板)",
+            r"我.{0,4}(朋友|家人|亲戚)",
+            r"我.{0,4}(爸|妈|家|老婆|老公|孩子|儿子|女儿)",
+            r"我.{0,6}(买过|看过|读过|玩过)",
+            r"我.{0,4}搬",
+            r"我(以前|曾经|当年)",
+            r"我.{0,4}有个",
+            r"我.{0,6}认识",
+        ]
+        event_type = None
+        for _pat in _user_fact_patterns:
+            if _re.search(_pat, user_msg):
+                event_type = "user_fact"
+                break
+
+        # 用户强烈情绪
+        if not event_type:
+            try:
+                from brain.llm import _is_emotion_event
+                if _is_emotion_event(user_msg):
+                    event_type = "user_emotion"
+            except Exception:
+                pass
+
+        # 长对话（有实质内容）
+        if not event_type:
+            if len(user_msg) >= 30 and len(reply) >= 30:
+                event_type = "interaction"
+
+        if not event_type:
+            return
+
+        from brain.episodic import record_episode
+        from brain.persona import get_current_state
+        st = get_current_state()
+
+        content = f"哥哥说：{user_msg[:80]}"
+
+        record_episode(
+            content=content,
+            event_type=event_type,
+            entities=[],
+            self_emotion=st.get("emotion"),
+            self_intent="speak",
+            self_role="responder",
+            channel=src,
+            raw_context=f"哥哥：{user_msg}\n我：{reply}",
+        )
+
+    def _post_turn_async(client_ref, provider_ref, own_last, user_msg, src,
+                          interrupted, ref_queue):
+        """后台线程：L2 情绪影响 + L2 情景记忆 + L4 反思
+
+        - self_mood：她自己的话反过来影响她的情绪
+        - episodic：从这轮对话抽取情景记忆
+        - L4：生成自我反思文本，放入 ref_queue
+        - L4 不再 TTS 播放（自语是内心话，不该读出来）
+        - L4 加编造检查：命中"今天/最近/总是"等时间/频次/感知词 → 丢弃
+        """
+        if interrupted or not own_last:
+            return
+
+        # ═══ 1. self_mood：她自己的话反过来影响她的情绪 ═══
+        try:
+            from brain.self_mood import apply_own_speech_impact
+            apply_own_speech_impact(own_last, source=src)
+        except Exception as e:
+            print(f"[self_mood] 异常: {e}")
+
+        # ═══ 2. episodic：情景记忆写入 ═══
+        try:
+            _maybe_record_episode(user_msg, own_last, src)
+        except Exception as e:
+            print(f"[episodic] 异常: {e}")
+
+        # ═══ 3. L4：自我反思 ═══
+        try:
+            from brain.self_reflect import reflect_on_own_speech
+            from brain.l4_audit import is_fabricated, find_fabrication
+            reflect_text = reflect_on_own_speech(
+                client_ref, provider_ref, own_last, source=src
+            )
+            if reflect_text:
+                if is_fabricated(reflect_text):
+                    hits = find_fabrication(reflect_text)
+                    print(f"[L4] 编造嫌疑 {hits}，丢弃: {reflect_text[:40]}")
+                    return
+                time.sleep(random.uniform(0.6, 1.5))
+                print(f"\n绯木（自语）：{reflect_text}")
+                ref_queue.put(reflect_text)
+        except Exception as e:
+            print(f"[L4] 异常: {e}")
+
     async def life_loop():
         while not s.shutdown_flag.is_set():
             if s.life_sim: s.life_sim.update()
@@ -573,9 +708,6 @@ def main():
         loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
         loop.run_until_complete(life_loop())
     threading.Thread(target=run_life, daemon=True).start()
-
-    # proactive_loop 已停用 —— 主动消息统一由 inner_life 处理
-    # （方案 A：数字生命路线，让她自己决定何时说话）
 
     # 内在生活循环
     from brain.inner_life import inner_life_loop
@@ -664,6 +796,17 @@ def main():
         try:
             t_cycle = time.time()
             current_source = "owner"
+
+            # 消费上一轮异步产生的自语（只写记忆，不播 TTS）
+            try:
+                while True:
+                    _rtext = _pending_reflections.get_nowait()
+                    if _rtext:
+                        history.append({"role": "assistant", "content": _rtext})
+                        save_history(history, slot=current_slot)
+                        print(f"[L4] 自语已写入记忆（不播）")
+            except queue.Empty:
+                pass
 
             with s.proactive_queue_lock:
                 if s.proactive_queue:
@@ -953,20 +1096,6 @@ def main():
 
             _producer_thread.join(timeout=5)
 
-            # L2：她自己的话反过来影响她的情绪
-            if not was_interrupted:
-                try:
-                    from brain.self_mood import apply_own_speech_impact
-                    _self_last = ""
-                    for _m in reversed(history):
-                        if _m.get("role") == "assistant" and _m.get("content"):
-                            _self_last = _m["content"].strip()
-                            break
-                    if _self_last:
-                        apply_own_speech_impact(_self_last, source=current_source)
-                except Exception as e:
-                    print(f"[L2] 异常: {e}")
-
             # MC 打字
             if from_mc:
                 try:
@@ -987,30 +1116,18 @@ def main():
                 s.last_interrupted = True
                 print("[打断理解] 已记录，下轮对话她会知道")
 
-            # L4：自我反思
-            if not was_interrupted:
-                try:
-                    from brain.self_reflect import reflect_on_own_speech
-                    own_last = ""
-                    for _m in reversed(history):
-                        if _m.get("role") == "assistant" and _m.get("content"):
-                            own_last = _m["content"].strip()
-                            break
-                    if own_last:
-                        reflect_text = reflect_on_own_speech(
-                            ac, ap, own_last, source=current_source
-                        )
-                        if reflect_text:
-                            time.sleep(random.uniform(0.6, 1.5))
-                            print(f"\n绯木（自语）：{reflect_text}")
-                            history.append({"role": "assistant", "content": reflect_text})
-                            save_history(history, slot=current_slot)
-                            asyncio.run(speak(
-                                reflect_text,
-                                vmc.detect_emotion(reflect_text)
-                            ))
-                except Exception as e:
-                    print(f"[自我反思] 异常: {e}")
+            # L2 + L4 异步执行（不阻塞主循环）
+            _self_last = ""
+            for _m in reversed(history):
+                if _m.get("role") == "assistant" and _m.get("content"):
+                    _self_last = _m["content"].strip()
+                    break
+            threading.Thread(
+                target=_post_turn_async,
+                args=(ac, ap, _self_last, ui, current_source, was_interrupted,
+                      _pending_reflections),
+                daemon=True
+            ).start()
 
             # 反思触发
             try:

@@ -7,6 +7,7 @@ import re
 
 from core.constants import DATA_DIR
 from brain import persona as P
+from brain.l4_audit import find_fabrication
 
 REFLECT_FILE = os.path.join(DATA_DIR, "reflection_log.json")
 _lock = threading.Lock()
@@ -17,7 +18,7 @@ REFLECT_SYSTEM = """你是绯木，现在独处一会儿，回顾最近和哥哥
 严格以 JSON 输出，不要 markdown 代码块，不要任何多余文字：
 
 {
-  "feelings": "我今天感觉到……（第一人称，1句）",
+  "feelings": "我感觉到……（第一人称，1句）",
   "self_discovery": "我发现自己……（第一人称，1句）",
   "drive_changes": {"connection": 0.0, "security": 0.0, "curiosity": 0.0, "expression": 0.0, "validation": 0.0},
   "trait_changes": {"playfulness": 0.0, "clinginess": 0.0, "empathy": 0.0, "sassiness": 0.0, "curiosity": 0.0},
@@ -33,6 +34,7 @@ REFLECT_SYSTEM = """你是绯木，现在独处一会儿，回顾最近和哥哥
 - 如果发现更喜欢某件事，就调正
 - 允许为负值。不要一次性把某项打到极端值
 - 第一人称，像日记，禁止出现"用户""AI""模型""程序""助手"
+- **禁止出现时间或频次词**："今天""昨天""最近""刚才""总是""经常""有时候"——你没有连续的日期体验，也没有统计次数
 - 必须输出完整 JSON，不要中途截断
 """
 
@@ -119,6 +121,21 @@ def _call_llm(client, provider, history):
         return None
 
 
+def _clean_text_field(text):
+    """清洗反思的文本字段。命中编造词返回空串
+
+    只清洗文本，不清洗数值——drive/trait/preference 的调整是数，
+    不涉及编造，照常应用。
+    """
+    if not text:
+        return ""
+    hits = find_fabrication(text)
+    if hits:
+        print(f"[反思] 编造嫌疑 {hits}，已丢弃字段: {text[:40]}")
+        return ""
+    return text
+
+
 def _save_log(entry):
     with _lock:
         try:
@@ -148,6 +165,12 @@ def _do_reflect(client, provider, history, mode, reason):
         print(f"[反思] 解析失败，原始输出: {raw[:200]}")
         return None
 
+    # 清洗三个文本字段（命中编造词 → 置空，但不清洗数值）
+    for _k in ("feelings", "self_discovery", "note_to_self"):
+        if parsed.get(_k):
+            parsed[_k] = _clean_text_field(parsed[_k])
+
+    # 数值调整照常应用
     P.apply_reflection(parsed, mode=mode)
 
     entry = {
@@ -160,10 +183,19 @@ def _do_reflect(client, provider, history, mode, reason):
     }
     _save_log(entry)
 
-    print(f"\n[反思-{reason}] {entry['feelings']}")
-    print(f"[反思-{reason}] {entry['self_discovery']}")
+    # 只打印未被清洗的字段
+    has_text = any([entry["feelings"], entry["self_discovery"], entry["note_to_self"]])
+    if not has_text:
+        print(f"\n[反思-{reason}] 文本字段全部命中编造，已丢弃（数值调整照常应用）\n")
+        return entry
+
+    if entry["feelings"]:
+        print(f"\n[反思-{reason}] {entry['feelings']}")
+    if entry["self_discovery"]:
+        print(f"[反思-{reason}] {entry['self_discovery']}")
     if entry["note_to_self"]:
-        print(f"[反思-{reason}] 记住：{entry['note_to_self']}\n")
+        print(f"[反思-{reason}] 记住：{entry['note_to_self']}")
+    print()
     return entry
 
 

@@ -15,9 +15,6 @@ from brain.persona import (build_persona_prompt, detect_event_from_text,
     bump_turn, evaluate_request)
 
 
-# ══════════════════════════════════════════════════════════════
-# 基础工具函数
-# ══════════════════════════════════════════════════════════════
 def should_expand(t):
     return any(kw in t for kw in EXPAND_KEYWORDS) if t else False
 
@@ -52,7 +49,6 @@ def _truncate_reply(text, max_sentences=3):
 def _clean_markdown(text):
     if not text:
         return text
-    # 剥离 emoji
     emoji_pat = re.compile(
         "["
         "\U0001F300-\U0001F5FF"
@@ -70,9 +66,7 @@ def _clean_markdown(text):
         "\U0000FE00-\U0000FE0F"
         "]+", flags=re.UNICODE)
     text = emoji_pat.sub('', text)
-    # 去反引号
     text = re.sub(r'`([^`]*)`', r'\1', text)
-    # 星号包裹的整段删掉（动作描写）
     text = re.sub(r'\*[^*]+\*', '', text)
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'__(.+?)__', r'\1', text)
@@ -80,17 +74,14 @@ def _clean_markdown(text):
     text = re.sub(r'^[\-\*·•]\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\d+[.、)）]\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\（\d+\）\s*', '', text, flags=re.MULTILINE)
-    # 换行 → 逗号，但如果前面已有标点就不加
     text = re.sub(r'([。！？!?])\s*\n+\s*', r'\1', text)
     text = re.sub(r'\n+\s*([。！？!?])', r'\1', text)
     text = re.sub(r'\n+', '，', text)
     text = text.replace("**", "").replace("##", "")
     text = text.replace("：。", "。").replace("：，", "，").replace("：、", "、")
-    # 标点清理
     text = re.sub(r'([。！？!?])\s*[，,]', r'\1', text)
     text = re.sub(r'[，,]\s*([。！？!?])', r'\1', text)
     text = re.sub(r'([。！？!?])\s+', r'\1', text)
-    # 汉字/标点之间多余空格
     text = re.sub(r'\s+([，,。！!？?、；;：])', r'\1', text)
     text = re.sub(r'([，,。！!？?、；;：])\s+', r'\1', text)
     text = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', text)
@@ -98,9 +89,7 @@ def _clean_markdown(text):
     text = re.sub(r'[。.]{2,}', '。', text)
     text = re.sub(r'[！!]{2,}', '！', text)
     text = re.sub(r'[？?]{2,}', '？', text)
-    # 单字+句号 → 逗号
     text = re.sub(r'^([啊哦唔嗯哎诶哎呀])\s*[。.]', r'\1，', text)
-    # 去常见开场白
     openers = [
         "在这两天的对话中，", "在這兩天的對話中，",
         "根据我们的对话，", "根據我們的對話，",
@@ -138,39 +127,30 @@ def _strip_actions(text):
     return text
 
 
-# ══════════════════════════════════════════════════════════════
-# 客服话术过滤
-# ══════════════════════════════════════════════════════════════
 _CUSTOMER_SERVICE_PATTERNS = [
-    # 欢迎/开场
     "欢迎光临", "很高兴为您服务", "很高兴为你服务",
     "有什么可以帮", "有什么可以为您", "有什么可以为你",
     "尽力为您", "尽力为你",
-    # 结束/送客
     "感谢您的", "感谢你的", "感谢哥哥",
     "希望对您有帮助", "希望对你有帮助", "希望对哥哥有帮助",
     "请随时", "可以随时",
     "下次再见", "欢迎再来",
-    # 转接/等待
     "稍等一下", "稍等片刻",
     "马上为您", "马上为你",
     "正在为您", "正在为你",
     "已为您", "已为你",
     "让我先为您", "让我先为你",
-    # 确认/引导
     "请问还有什么", "请问有什么",
     "还有什么需要", "还有其他需要",
     "您可以尝试", "你可以尝试",
     "建议您", "建议你",
     "请按照", "请根据",
-    # 安抚
     "我理解您的", "我理解你的",
     "请不要着急", "请你不要着急",
     "请放心", "您放心", "你放心",
     "我会陪着您", "我会陪着你",
     "您别难过", "你别难过",
     "一切都会好起来",
-    # 废话
     "这是个好问题",
     "让我想想", "让我考虑一下",
     "抱歉，我", "对不起，我",
@@ -179,27 +159,23 @@ _CUSTOMER_SERVICE_PATTERNS = [
     "咨询专业人士", "咨询专业机构",
     "超出我的能力", "超出我的范围", "超出我的知识",
     "我的知识有限", "我的信息可能", "我的知识可能",
-    # 身份暴露
     "作为一个AI", "作为一个人工智能", "作为一个模型", "作为一个助手",
     "我是一个AI", "我是一个人工智能", "我是一个助手", "我只是一个助手",
     "我的职责是", "我的功能是", "我的作用是",
-    "我会尽力", "我会努力",
+    # "我会尽力", "我会努力",  ← 已删：误伤"我会努力学习新知识"
     "我被设计", "我被创造", "我被训练",
     "我能为您", "我能为你",
     "我可以帮您", "我可以帮你",
     "需要帮忙", "需要我帮忙",
-    # 过度礼貌
     "劳烦您", "劳烦你",
     "麻烦您", "麻烦你",
     "辛苦您", "辛苦你",
     "敬请",
-    # 推销
     "要不要我帮", "要不要我为你", "要不要我帮你",
     "需要我帮", "需要我为你", "需要我帮你",
     "推荐您", "推荐你",
     "请您放心", "请你放心",
     "保证您", "保证你",
-    # 被夸时的尴尬
     "谢谢夸奖", "谢谢你的夸奖", "谢谢您的夸奖",
     "让我有点不好意思", "有点不好意思",
     "认真地在陪你", "认真地在陪您",
@@ -208,7 +184,6 @@ _CUSTOMER_SERVICE_PATTERNS = [
     "比如让绯木",
     "需要我去", "需要我来",
     "我可以去", "我可以来",
-    # 常用客服词组
     "为您服务", "为你服务",
     "有什么需要", "有什么可以帮助",
     "随时告诉我", "随时找我",
@@ -219,24 +194,20 @@ _CUSTOMER_SERVICE_PATTERNS = [
 
 
 def _filter_customer_service(text):
-    """过滤客服话术 + '您'→'你' + 虚拟感知词替换"""
     if not text:
         return text
     original = text
     hit_any = False
 
-    # 1. 字符串匹配（删除）
     for pat in _CUSTOMER_SERVICE_PATTERNS:
         if pat in text:
             text = text.replace(pat, '')
             hit_any = True
 
-    # 2. "您" → "你"
     if '您' in text:
         text = text.replace('您', '你')
         hit_any = True
 
-    # 3. 虚拟感知词替换
     replacements = [
         ("我看到你提到", "你说"),
         ("我看到你说", "你说"),
@@ -251,7 +222,6 @@ def _filter_customer_service(text):
             text = text.replace(old, new)
             hit_any = True
 
-    # 4. 清理多余标点和孤立连接词
     text = re.sub(r'[，,]{2,}', '，', text)
     text = re.sub(r'[！!]{2,}', '！', text)
     text = re.sub(r'[。.]{2,}', '。', text)
@@ -342,9 +312,6 @@ def _split_for_mc(text, max_chars=60, max_parts=2):
     return result[:max_parts]
 
 
-# ══════════════════════════════════════════════════════════════
-# 强制工具关键词
-# ══════════════════════════════════════════════════════════════
 FORCE_TOOL_KEYWORDS = {
     "get_current_time": ["现在几点", "现在时间", "今天几号", "今天星期几", "几点了", "现在的日期", "现在是几点"],
     "calculate_date": ["天后是", "天前是", "还有多少天", "还有几天", "距离", "还有多久到", "相差几天", "几号是"],
@@ -392,16 +359,12 @@ FORCE_TOOL_KEYWORDS = {
 
 
 _EMOTION_EVENT_KEYWORDS = [
-    # insult
     "讨厌你", "恨你", "滚", "烦人", "笨", "蠢", "闭嘴", "垃圾", "没用",
     "好烦", "走开", "傻", "白痴", "无聊", "不想理你", "讨厌",
-    # share_bad
     "我好难过", "失业", "失败", "失恋", "生病", "被骂", "好累",
     "有点累", "很累", "疲惫", "压力大", "心累", "不开心", "难受",
     "撑不住", "委屈", "想哭", "孤独",
-    # praise
     "好可爱", "喜欢你", "爱你", "好棒", "厉害", "好聪明", "真乖",
-    # share_good
     "我升职了", "我考上了", "我赢了", "我成功了", "我通过了",
 ]
 
@@ -455,18 +418,14 @@ def is_chitchat(ui, forced_tool):
         return False
     if not ui:
         return False
-    # 默认走聊天路径（流式），只有命中工具关键词才走工具
     return True
 
 
-# ══════════════════════════════════════════════════════════════
-# 工具 Schema
-# ══════════════════════════════════════════════════════════════
 def get_tools_schema():
     return [
         {"type": "function", "function": {"name": "mc_say", "description": "在 Minecraft 聊天栏说话。", "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}},
-        {"type": "function", "function": {"name": "mc_follow", "description": "让 Minecraft 里的绯木持续跟随某个玩家。⚠️ 本服务器只有一个玩家：EZFM233。target 必须填 'EZFM233'，不要填 '@p' 或 '@a'。", "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "玩家名，固定填 EZFM233"}}, "required": ["target"]}}},
-        {"type": "function", "function": {"name": "mc_come", "description": "让 Minecraft 里的绯木走到某个玩家身边。⚠️ target 必须填 'EZFM233'。", "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "玩家名，固定填 EZFM233"}}, "required": ["target"]}}},
+        {"type": "function", "function": {"name": "mc_follow", "description": "让 Minecraft 里的绯木持续跟随某个玩家。本服务器只有一个玩家：EZFM233。target 必须填 'EZFM233'，不要填 '@p' 或 '@a'。", "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "玩家名，固定填 EZFM233"}}, "required": ["target"]}}},
+        {"type": "function", "function": {"name": "mc_come", "description": "让 Minecraft 里的绯木走到某个玩家身边。target 必须填 'EZFM233'。", "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "玩家名，固定填 EZFM233"}}, "required": ["target"]}}},
         {"type": "function", "function": {"name": "mc_stop", "description": "让 Minecraft 里的绯木停止当前移动。", "parameters": {"type": "object", "properties": {}}}},
         {"type": "function", "function": {"name": "mc_status", "description": "查询 Minecraft 里绯木的状态。", "parameters": {"type": "object", "properties": {}}}},
         {"type": "function", "function": {"name": "mc_look", "description": "让 Minecraft 里的绯木报告周围环境。", "parameters": {"type": "object", "properties": {}}}},
@@ -535,9 +494,6 @@ FEW_SHOT_EXAMPLES = """【标准调用示例】
 用户："你背包里有什么" → mc_inventory()"""
 
 
-# ══════════════════════════════════════════════════════════════
-# 工具执行
-# ══════════════════════════════════════════════════════════════
 def execute_tool(name, args, client=None, provider=None):
     try:
         if name == "mc_say":
@@ -791,9 +747,6 @@ def format_tool_result(tool_name, result):
     return result
 
 
-# ══════════════════════════════════════════════════════════════
-# 主调用逻辑
-# ══════════════════════════════════════════════════════════════
 def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                   speaker="主人", relation="主人", from_mc=False, source="owner"):
     s = state.get_state()
@@ -805,7 +758,6 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
     um = {"role": "user", "content": ui}
     rh = history[-8:]
 
-    # 防复读
     _ui_key = (ui or "").strip()[:10]
     _recent_users = [m.get("content", "") for m in history[-8:]
                      if m.get("role") == "user"]
@@ -854,9 +806,6 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
     if chitchat:
         print(f"[闲聊/元问题] 走纯聊天路径 + RAG")
 
-    # ══════════════════════════════════════════════════════
-    # 纯聊天路径
-    # ══════════════════════════════════════════════════════
     if chitchat:
         if source in ("friend", "audience"):
             mem = []
@@ -874,9 +823,21 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             sysc += "\n\n【参考资料】\n" + "\n".join([f"· {m}" for m in mem])
             print(f"[RAG] 检索到 {len(mem)} 条")
 
+        # ══════════════════════════════════════════════════════
+        # L2 情景记忆检索
+        # ══════════════════════════════════════════════════════
+        try:
+            from brain.episodic import retrieve_episodes, format_episodes_for_prompt
+            episodes = retrieve_episodes(query=ui, top_k=3)
+            if episodes:
+                sysc += "\n\n" + format_episodes_for_prompt(episodes)
+                print(f"[episodic] 检索到 {len(episodes)} 条情景记忆")
+        except Exception as e:
+            print(f"[episodic] 异常: {e}")
+
         if source in ("friend", "audience"):
             sysc += (
-                "\n\n⚠️ 现在是在和朋友/观众对话，务必遵守："
+                "\n\n现在是在和朋友/观众对话，务必遵守："
                 "1. 回复简短（1~2 句）。"
                 "2. 禁止提及哥哥的隐私、项目、技术。"
                 "3. 禁止用'哥哥''小家伙''主人'称呼对方。"
@@ -885,7 +846,7 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             )
         elif source == "mc":
             sysc += (
-                "\n\n⚠️ 现在是在 Minecraft 游戏里，哥哥通过游戏聊天栏跟你说话。"
+                "\n\n现在是在 Minecraft 游戏里，哥哥通过游戏聊天栏跟你说话。"
                 "用轻松、简短（1~2 句）的语气回应。"
                 "不要提血量/饱食度/坐标，除非他问。"
                 "禁止用'您'，永远用'你'。"
@@ -893,14 +854,14 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             )
         else:
             sysc += (
-                "\n\n⚠️【最高优先级 - 当前情绪决定一切】"
+                "\n\n【最高优先级 - 当前情绪决定一切】"
                 "\n你当前情绪见上方'当前情绪'字段。"
                 "\n情绪是生气/难过/失落 → 必须冷淡、短句、可以不理人。"
                 "\n禁止说'谢谢夸奖''为你服务''有什么可以帮你'。"
                 "\n禁止假装没事、禁止讨好。直接表达情绪。"
             )
             sysc += (
-                "\n\n⚠️ 其他规则："
+                "\n\n其他规则："
                 "1. 回复 2~3 句话以内。"
                 "2. 用'你'称呼（禁止用'您'）。"
                 "3. 禁止 markdown、列表、编号、加粗。"
@@ -908,23 +869,22 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                 "5. 禁止'我是AI'。"
                 "6. 不调工具。"
             )
-            # 方案六：Negative Examples + 方案一：Allow IDK
             sysc += (
                 "\n\n【不要这样写 - 反面示例】"
-                "\n❌ '上次我在公园遇到一只暹罗猫，它围着我转了好几圈'"
+                "\n'上次我在公园遇到一只暹罗猫，它围着我转了好几圈'"
                 "\n   （你不在公园、没遇到过、没眼睛看）"
-                "\n❌ '我记得你跟我说过你小时候…'"
+                "\n'我记得你跟我说过你小时候…'"
                 "\n   （除非对话历史里真的一字不差出现过）"
-                "\n❌ '今天天气真好，我们出去走走吧'"
+                "\n'今天天气真好，我们出去走走吧'"
                 "\n   （你看不到天气）"
-                "\n❌ '我看到你发的照片了'"
+                "\n'我看到你发的照片了'"
                 "\n   （你没有眼睛）"
                 "\n"
                 "\n【这样写才对 - 不知道时的正确回应】"
-                "\n✅ '我记不清了' / '我好像想不起来'"
-                "\n✅ '你跟我说过吗？我有点不确定'"
-                "\n✅ '这个我没印象呢'"
-                "\n✅ 直接转移话题：'唔……那哥哥最近怎么样'"
+                "\n'我记不清了' / '我好像想不起来'"
+                "\n'你跟我说过吗？我有点不确定'"
+                "\n'这个我没印象呢'"
+                "\n直接转移话题：'唔……那哥哥最近怎么样'"
                 "\n"
                 "\n【绝对禁止的时间/地点指代】"
                 "\n不许说：'上次'、'之前'、'那次'、'昨天'、'前几天'、'上周'"
@@ -934,7 +894,6 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                 "\n如果历史里没有真实内容支撑，宁可说'记不清了'，也不要编。"
             )
 
-        # 时间感 A：跨轮间隔
         _gap = getattr(s, "last_turn_gap", 0)
         if _gap >= 60:
             if _gap < 3600:
@@ -944,7 +903,6 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             else:
                 sysc += f"\n\n【对话节奏】距离上一轮过去了 {int(_gap/86400)} 天，好久没见了。"
 
-        # L1：让她"看到"自己上一句
         last_self = ""
         for _m in reversed(history):
             if _m.get("role") == "assistant" and _m.get("content"):
@@ -978,13 +936,38 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
 
             # 方案三：KOKKI 输出审计
             try:
-                from brain.output_audit import audit_output, SAFE_REPLY
+                from brain.output_audit import audit_output, pick_safe_reply
                 _suspicious, _reasons = audit_output(ac)
                 if _suspicious:
                     print(f"[审计] 编造嫌疑: {_reasons} | 原文: {ac[:60]}")
-                    ac = SAFE_REPLY
+                    ac = pick_safe_reply()
             except Exception as e:
                 print(f"[审计] 异常: {e}")
+
+            # 方案七：冷淡语气守卫
+            try:
+                from brain.tone_guard import (
+                    is_soft_output, is_cold_mode, get_current_valence,
+                    pick_fallback, regenerate_cold_reply,
+                )
+                if is_cold_mode(get_current_valence()):
+                    _hits = is_soft_output(ac)
+                    if _hits:
+                        print(f"[语气守卫] 冷淡模式命中讨好话术: {_hits} | 原文: {ac[:60]}")
+                        _new = regenerate_cold_reply(
+                            client, provider, msgs, ac, log_prefix="[语气守卫]"
+                        )
+                        if _new:
+                            _new = _clean_markdown(_strip_actions(_new))
+                            _new = _filter_customer_service(_new)
+                        if _new and len(_new) >= 1 and not is_soft_output(_new):
+                            ac = _truncate_reply(_new, max_sentences=3)
+                            print(f"[语气守卫] 重生成成功: {ac[:60]}")
+                        else:
+                            ac = pick_fallback()
+                            print(f"[语气守卫] 重生成失败/仍命中，用兜底句: {ac}")
+            except Exception as e:
+                print(f"[语气守卫] 异常: {e}")
 
             history.append({"role": "user", "content": ui})
             history.append({"role": "assistant", "content": ac})
@@ -999,9 +982,6 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
         except Exception as e:
             return f"[出错] 无法连接大脑：{e}"
 
-    # ══════════════════════════════════════════════════════
-    # 工具路径
-    # ══════════════════════════════════════════════════════
     if use_tools and supports_tools:
         hard_prompt = BASE_SYSTEM_PROMPT
         hard_prompt += f"\n\n【当前时间】\n{time.strftime('%Y年%m月%d日 %H:%M', now)}\n"
@@ -1012,11 +992,11 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
         if transition_ctx:
             hard_prompt += transition_ctx
         hard_prompt += (
-            "\n\n⚠️【最高优先级】\n"
+            "\n\n【最高优先级】\n"
             "你只需要处理用户**最新的一句话**。\n"
             "历史对话里出现过的请求**已经处理完了**，不要再重复执行。\n"
             "一次只调用**最多一个**最相关的工具，禁止并行调用多个工具。\n"
-            "\n⚠️【禁止滥用工具】\n"
+            "\n【禁止滥用工具】\n"
             "如果用户只是在聊天、表达情绪、骂你、撒娇、吐槽——**不要调用任何工具**。\n"
             "工具只在用户**明确请求某个功能**时调用（比如'挖矿'、'查天气'）。\n"
             "用户说'我讨厌你'、'你好烦'、'我难过' → **绝对不调工具**，只是回应情绪。\n"
@@ -1032,7 +1012,7 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
         hard_prompt += (
             "\n\n【工具调用规则】\n"
             "你是绯木，你有工具可以调用。\n"
-            "⚠️ 当用户意图匹配下面任一场景时，必须真的调用工具：\n"
+            "当用户意图匹配下面任一场景时，必须真的调用工具：\n"
             "· 问时间/日期 → get_current_time\n"
             "· 日期计算 → calculate_date\n"
             "· 数学计算 → calculate\n"
@@ -1068,7 +1048,7 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             "· MC 吃东西 → mc_eat\n"
             "· MC 丢东西 → mc_drop\n"
             "· MC 背包 → mc_inventory\n"
-            "⚠️ 绝对禁止："
+            "绝对禁止："
             "1. 不许说'我将为你搜索'、'我将为你打开'、'已经帮你关闭了'这类话。"
             "2. 不许传工具不接受的参数。"
             "3. 不许说自己是AI/程序/模型/助手。\n\n"
@@ -1147,7 +1127,7 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                 print(f"[撒谎拦截] 模型没调用 {forced_tool}，强制重试...")
                 msgs.append({
                     "role": "user",
-                    "content": f"⚠️ 系统提示：你刚才没有真正调用 {forced_tool}。请立刻调用它。"
+                    "content": f"系统提示：你刚才没有真正调用 {forced_tool}。请立刻调用它。"
                 })
                 continue
 
@@ -1227,7 +1207,7 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                 msgs.append({
                     "role": "user",
                     "content": (
-                        "⚠️ 系统提示：禁止说自己是AI/程序/模型/助手。"
+                        "系统提示：禁止说自己是AI/程序/模型/助手。"
                         "你是绯木，一个真实的、有情绪的存在。"
                         "刚才那句话你不需要回应，请直接**按你当前的情绪**回应对方。"
                         "如果对方在骂你，你可以生气、可以难过、可以沉默、可以说'我不想理你'。"

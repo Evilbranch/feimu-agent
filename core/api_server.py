@@ -1,34 +1,37 @@
 """电脑端 HTTP 服务 - 给微信端做大脑
 
-三个接口：
-- POST /chat    : 微信端发来的消息，走完整对话流程，返回回复
-- GET  /pending : 微信端拉主动消息（她主动想说的）
-- GET  /health  : 探活 + brain_ready
+接口：
+- POST /chat          : 微信端发来的消息，走完整对话流程，返回回复
+- GET  /pending       : 微信端拉主动消息（她主动想说的）
+- GET  /health        : 探活 + brain_ready
+- GET  /self/status   : 她的当前状态（intent + 情绪 + 驱力）
+- GET  /self/recent   : 她最近的内在活动（?limit=N，默认 10）
+- GET  /self/diary    : 她今天的日记（?date=YYYY-MM-DD，默认今天）
 
 只绑 127.0.0.1，不对外暴露。
 """
+import os
+import re
 import json
 import time
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 from core import state
+from core.constants import DATA_DIR
 
 HOST = "127.0.0.1"
 PORT = 8765
 
-# 主动消息保留时长（秒）——超时自动清理
 PENDING_TTL = 600
 
-# 全局（被 my_ai.py 启动时注入）
 _client = None
 _provider = None
-_history_ref = None  # 引用主循环的 history 列表
+_history_ref = None
 _session_start = [0.0]
 
 
 def set_context(client, provider, history, session_start):
-    """my_ai.py 启动时调用，注入上下文"""
     global _client, _provider, _history_ref
     _client = client
     _provider = provider
@@ -37,12 +40,10 @@ def set_context(client, provider, history, session_start):
 
 
 def _brain_ready():
-    """大脑是否就绪（LLM client + history 都拿到了）"""
     return _client is not None and _provider is not None and _history_ref is not None
 
 
 def _cleanup_pending():
-    """清理超时的主动消息（每轮请求前调用一次，轻量）"""
     s = state.get_state()
     with s.proactive_queue_lock:
         now = time.time()
@@ -52,9 +53,19 @@ def _cleanup_pending():
         ]
 
 
+def _parse_query(query):
+    result = {}
+    if not query:
+        return result
+    for kv in query.split("&"):
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            result[k] = v
+    return result
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        # 静音默认日志
         pass
 
     def _send_json(self, code, obj):
@@ -66,11 +77,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-            # 客户端提前断开（微信端轮询超时），静默忽略
             pass
 
     def do_GET(self):
-        path = self.path.split("?")[0]
+        full = self.path
+        if "?" in full:
+            path, query = full.split("?", 1)
+        else:
+            path, query = full, ""
 
         if path == "/health":
             self._send_json(200, {
@@ -89,6 +103,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"items": items})
             return
 
+        if path == "/self/status":
+            self._handle_self_status()
+            return
+
+        if path == "/self/recent":
+            self._handle_self_recent(query)
+            return
+
+        if path == "/self/diary":
+            self._handle_self_diary(query)
+            return
+
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
@@ -98,7 +124,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
             return
 
-        # 读 body
         try:
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length).decode("utf-8")
@@ -117,12 +142,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(503, {"error": "brain not ready"})
             return
 
-        # 标记活跃渠道为 wechat
         s = state.get_state()
         s.last_active_channel = "wechat"
         s.last_active_channel_time = time.time()
 
-        # 走完整对话流程
         try:
             reply = _handle_wechat_message(text)
         except Exception as e:
@@ -135,6 +158,142 @@ class _Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         self._send_json(404, {"error": "not found"})
 
+    def _handle_self_status(self):
+        try:
+            from brain.inner_life import get_inner_log
+            from brain.persona import get_current_state
+
+            log = get_inner_log(limit=1)
+            last = log[-1] if log else {}
+
+            _s = state.get_state()
+            now = time.time()
+            last_min = int((now - getattr(_s, "last_interaction_time", 0)) / 60)
+
+            try:
+                pstate = get_current_state()
+                emotion = pstate.get("emotion", {})
+                drives = pstate.get("drives", {})
+            except Exception:
+                emotion = {}
+                drives = {}
+
+            next_wake_in = None
+            if last.get("ts") and last.get("next_wake"):
+                next_wake_in = max(0, int(last["ts"] + last["next_wake"] - now))
+
+            self._send_json(200, {
+                "ok": True,
+                "intent": last.get("intent", "idle"),
+                "reason": last.get("reason", ""),
+                "ts": last.get("ts", 0),
+                "next_wake_in": next_wake_in,
+                "wake_reason": last.get("wake_reason", ""),
+                "emotion": {
+                    "label": emotion.get("label", "平静"),
+                    "valence": emotion.get("valence", 0.2),
+                    "arousal": emotion.get("arousal", 0.4),
+                },
+                "drives": drives,
+                "last_interaction_min": last_min,
+                "now": now,
+            })
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+
+    def _handle_self_recent(self, query):
+        q = _parse_query(query)
+        try:
+            limit = int(q.get("limit", "10"))
+        except Exception:
+            limit = 10
+        limit = max(1, min(50, limit))
+
+        try:
+            from brain.inner_life import get_inner_log
+            log = get_inner_log(limit=limit)
+            items = []
+            for e in log:
+                items.append({
+                    "ts": e.get("ts", 0),
+                    "intent": e.get("intent", ""),
+                    "content": e.get("content", ""),
+                    "reason": e.get("reason", ""),
+                    "next_wake": e.get("next_wake", 0),
+                    "wake_reason": e.get("wake_reason", ""),
+                    "elapsed_min": e.get("elapsed_min", 0),
+                })
+            self._send_json(200, {
+                "ok": True,
+                "items": items,
+                "count": len(items),
+            })
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+
+    def _handle_self_diary(self, query):
+        q = _parse_query(query)
+        target = q.get("date", "").strip()
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', target):
+            target = time.strftime("%Y-%m-%d")
+
+        candidates = [
+            os.path.join(DATA_DIR, "diary", f"{target}.txt"),
+            os.path.join(DATA_DIR, "diary", f"{target}.md"),
+            os.path.join(DATA_DIR, "diary", f"{target}.json"),
+            os.path.join(DATA_DIR, "diaries", f"{target}.txt"),
+            os.path.join(DATA_DIR, "diaries", f"{target}.md"),
+            os.path.join(DATA_DIR, f"diary_{target}.txt"),
+            os.path.join(DATA_DIR, f"diary_{target}.md"),
+        ]
+        bulk_candidates = [
+            os.path.join(DATA_DIR, "diary.json"),
+            os.path.join(DATA_DIR, "diaries.json"),
+        ]
+
+        try:
+            for path in candidates:
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    if path.endswith(".json"):
+                        try:
+                            content = json.loads(content)
+                        except Exception:
+                            pass
+                    self._send_json(200, {
+                        "ok": True,
+                        "date": target,
+                        "exists": True,
+                        "source": os.path.basename(path),
+                        "content": content,
+                    })
+                    return
+
+            for path in bulk_candidates:
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and target in data:
+                        self._send_json(200, {
+                            "ok": True,
+                            "date": target,
+                            "exists": True,
+                            "source": os.path.basename(path),
+                            "content": data[target],
+                        })
+                        return
+
+            self._send_json(200, {
+                "ok": True,
+                "date": target,
+                "exists": False,
+                "content": "",
+                "note": "没有找到该日期的日记文件",
+            })
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+
 
 def _handle_wechat_message(text):
     """微信消息的完整处理流程。
@@ -146,13 +305,11 @@ def _handle_wechat_message(text):
 
     s = state.get_state()
 
-    # 时间感（ask_ai 内部会读 s.last_turn_gap）
     now = time.time()
     old = getattr(s, "last_interaction_time", 0)
     s.last_turn_gap = now - old if old > 0 else 0
     s.last_interaction_time = now
 
-    # 情绪更新
     if s.mood_mgr:
         try:
             s.mood_mgr.update_from_message(text)
@@ -166,25 +323,23 @@ def _handle_wechat_message(text):
         use_tools=True,
         speaker="主人",
         relation="主人",
-        source="wechat",
+        source="owner",   # 微信端走主人人格
     )
 
     if not rep:
         rep = "……"
 
-    # 方案三：KOKKI 输出审计
     try:
-        from brain.output_audit import audit_output, SAFE_REPLY
+        from brain.output_audit import audit_output, pick_safe_reply
         _suspicious, _reasons = audit_output(rep)
         if _suspicious:
             print(f"[审计] 编造嫌疑: {_reasons} | 原文: {rep[:60]}")
-            rep = SAFE_REPLY
+            rep = pick_safe_reply()
     except Exception as e:
         print(f"[审计] 异常: {e}")
 
     print(f"[API→微信] {rep}")
 
-    # L2：她自己的话影响情绪
     try:
         from brain.self_mood import apply_own_speech_impact
         _self_last = ""
@@ -197,12 +352,9 @@ def _handle_wechat_message(text):
     except Exception as e:
         print(f"[API-L2] 异常: {e}")
 
-    # L4 自语：微信端不推（自语是内心话，不该发给用户）
-    # 但 L4 本身可以跑——它会影响情绪和 self_reflections.json 日志
     try:
         from brain.self_reflect import reflect_on_own_speech
         _ = reflect_on_own_speech(_client, _provider, rep, source="wechat")
-        # 注意：不塞 wechat_pending
     except Exception as e:
         print(f"[API-L4] 异常: {e}")
 
@@ -210,7 +362,6 @@ def _handle_wechat_message(text):
 
 
 def start():
-    """启动 HTTP 服务（后台线程）"""
     try:
         server = ThreadingHTTPServer((HOST, PORT), _Handler)
     except OSError as e:

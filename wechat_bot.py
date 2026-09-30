@@ -4,6 +4,7 @@
 - 收微信消息 → POST 电脑端 /chat → 拿回复 → 发回微信
 - 电脑端离线 → 消息存 outbox + 回"她不在"
 - 后台线程补发 outbox + 轮询主动消息
+- 命令拦截（/status /recent /diary）：本地处理，不走大脑
 """
 import os
 import sys
@@ -18,6 +19,7 @@ import requests
 
 from core import constants
 from core.logger import mark_running, mark_clean_exit
+from wechat_commands import try_handle
 
 try:
     from weixin_ilink import WeixinBot
@@ -116,7 +118,6 @@ def _send_to_user(bot, user_id, text):
 # ══════════════════════════════════════════════════════════════
 # Outbox（离线缓存）
 # ══════════════════════════════════════════════════════════════
-
 def _load_outbox():
     with _outbox_lock:
         if not os.path.exists(OUTBOX_FILE):
@@ -177,7 +178,6 @@ def _worker_resend(bot, stop_event):
 
         idx = 0
         while True:
-            # 单次补发上限 5 条，剩下的清空（太旧的没必要补）
             if idx >= 5:
                 remain = _load_outbox()
                 if remain:
@@ -206,7 +206,7 @@ def _worker_resend(bot, stop_event):
             else:
                 _requeue_outbox_front(item)
                 break
-            time.sleep(2.5)   # 从 1 秒改到 2.5 秒，避免刷屏
+            time.sleep(2.5)
 
 
 def _worker_pending(bot, stop_event):
@@ -253,7 +253,6 @@ def main():
         print("[微信] 首次登录，请扫码...")
         bot = WeixinBot.from_login(save_to=creds_path)
 
-    # 启动时重试 10 次（最多等 30 秒），避免电脑端预热期误报
     ok, ready = False, False
     for i in range(10):
         ok, ready = _health()
@@ -289,6 +288,20 @@ def main():
             if not ui:
                 return
             print(f"\n[微信←] <{user_id}> {ui}")
+
+            # ══════════════════════════════════════════════════════
+            # 命令拦截（/status /recent /diary）—— 本地处理，不走大脑
+            # ══════════════════════════════════════════════════════
+            cmd_reply, handled = try_handle(ui)
+            if handled:
+                print(f"[命令] 命中：{ui[:20]}")
+                try:
+                    msg.reply_text(cmd_reply)
+                    print(f"[微信→] {cmd_reply[:60]}")
+                except Exception as e:
+                    print(f"[命令] 回复失败: {e}")
+                return
+            # ══════════════════════════════════════════════════════
 
             ok, ready = _health()
             if not ok or not ready:

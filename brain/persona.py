@@ -36,7 +36,6 @@ DEFAULT_EMOTION = {
 }
 
 DEFAULT_PREFERENCES = {
-    # === 种子偏好（好奇、学习、沟通、记录、游戏动漫、猫）===
     "学习新东西":   +0.85,
     "和人聊天":     +0.80,
     "帮人疏导情绪": +0.75,
@@ -233,14 +232,12 @@ def _derive_emotion_from_drives(d):
 
 
 def _count_recent_apologies(data, minutes=30):
-    """统计最近 30 分钟内的道歉/化解次数"""
     now = time.time()
     return sum(1 for r in data.get("apology_history", [])
                if now - r.get("ts", 0) < minutes * 60)
 
 
 def _record_apology(data, kind):
-    """记录一次道歉事件"""
     data.setdefault("apology_history", [])
     data["apology_history"].append({"ts": time.time(), "kind": kind})
     cutoff = time.time() - 7200
@@ -248,11 +245,24 @@ def _record_apology(data, kind):
                                 if r.get("ts", 0) > cutoff]
 
 
+def _count_recent_share_bad(data, minutes=30):
+    now = time.time()
+    return sum(1 for r in data.get("share_bad_history", [])
+               if now - r.get("ts", 0) < minutes * 60)
+
+
+def _record_share_bad(data):
+    data.setdefault("share_bad_history", [])
+    data["share_bad_history"].append({"ts": time.time()})
+    cutoff = time.time() - 7200
+    data["share_bad_history"] = [r for r in data["share_bad_history"]
+                                  if r.get("ts", 0) > cutoff]
+
+
 def process_event(event_type, intensity=1.0, mode=None):
     with _lock:
         data = _load()
 
-        # 道歉/化解事件：30 分钟内次数越多，效果越弱
         if event_type in ("apology", "soothe"):
             n_recent = _count_recent_apologies(data, minutes=30)
             if n_recent >= 4:
@@ -262,6 +272,19 @@ def process_event(event_type, intensity=1.0, mode=None):
                 intensity *= 0.5
                 print(f"[人格] 道歉已 {n_recent} 次，效果 ×0.5")
             _record_apology(data, event_type)
+
+        if event_type == "share_bad":
+            n_recent = _count_recent_share_bad(data, minutes=30)
+            if n_recent >= 3:
+                intensity *= 0.1
+                print(f"[人格] share_bad 已 {n_recent} 次，效果 ×0.1")
+            elif n_recent >= 2:
+                intensity *= 0.25
+                print(f"[人格] share_bad 已 {n_recent} 次，效果 ×0.25")
+            elif n_recent >= 1:
+                intensity *= 0.5
+                print(f"[人格] share_bad 已 {n_recent} 次，效果 ×0.5")
+            _record_share_bad(data)
 
         m = mode or data["current_mode"]
         p = data[m]
@@ -302,11 +325,48 @@ def process_event(event_type, intensity=1.0, mode=None):
         return p["emotion"]
 
 
+# ══════════════════════════════════════════════════════════
+# 主语判定（区分"用户倾诉"vs"用户关心绯木"）
+# ══════════════════════════════════════════════════════════
+_FEIMU_NAMES = ["绯木", "飞木", "肥木", "菲木", "非木", "费木", "木木", "小木"]
+_FEIMU_WORDS = ["你", "哥哥", "哥"] + _FEIMU_NAMES
+_USER_WORDS = ["我", "俺", "咱"]
+
+
+def _has_feimu_target(text):
+    return any(w in text for w in _FEIMU_WORDS)
+
+
+def _has_user_target(text):
+    return any(w in text for w in _USER_WORDS)
+
+
+def _is_user_self_target(text):
+    if not text:
+        return False
+    hf = _has_feimu_target(text)
+    hu = _has_user_target(text)
+    if hu and not hf:
+        return True
+    return False
+
+
+def _is_user_distress(text):
+    if not text:
+        return True
+    hf = _has_feimu_target(text)
+    hu = _has_user_target(text)
+    if hf and not hu:
+        return False
+    return True
+
+
 def detect_event_from_text(ui):
     if not ui:
         return None
     text = ui
 
+    # 1. 问感情
     if any(k in text for k in [
         "你爱我吗", "你喜欢我吗", "你会爱我", "你是不是喜欢我",
         "你有感情吗", "你有没有感情", "你对我什么感觉",
@@ -315,7 +375,7 @@ def detect_event_from_text(ui):
         process_event("asked_love", 1.0)
         return "asked_love"
 
-    # 道歉 —— 修复被骂后道歉无反应
+    # 2. 道歉
     if any(k in text for k in [
         "抱歉", "对不起", "我错了", "不好意思", "别生气", "别难过",
         "我道歉", "原谅我", "是我不好", "我不该", "我说错话",
@@ -323,7 +383,7 @@ def detect_event_from_text(ui):
         process_event("apology", 1.0)
         return "apology"
 
-    # 化解 —— 玩笑澄清
+    # 3. 化解
     if any(k in text for k in [
         "开玩笑的", "开玩笑啦", "逗你的", "逗你玩", "别当真",
         "说着玩的", "随便说说", "逗你嘛",
@@ -331,6 +391,21 @@ def detect_event_from_text(ui):
         process_event("soothe", 1.0)
         return "soothe"
 
+    # 4. 关心（前置，避免被 share_bad 抢）
+    if any(k in text for k in [
+        "你还好吗", "你还好吧", "你没事吧", "你没事吗",
+        "担心你", "心疼你", "辛苦了",
+        "你是不是不开心", "你是不是难过", "你是不是生气",
+        "你是不是不舒服", "你是不是不高兴",
+        "你怎么了", "你不开心吗", "你难过吗",
+        "你不高兴吗", "你不舒服吗", "你还好么",
+        "你的心情", "你感觉怎么样", "你现在怎么样",
+        "你今天怎么样", "你怎么样",
+    ]):
+        process_event("care", 1.0)
+        return "care"
+
+    # 5. 夸奖
     if any(k in text for k in [
         "喜欢你", "好可爱", "好棒", "厉害", "爱你", "好聪明", "棒棒的",
         "真乖", "你最好了", "好贴心", "好温柔", "抱抱", "么么", "亲亲",
@@ -340,13 +415,17 @@ def detect_event_from_text(ui):
         process_event("praise", 1.0)
         return "praise"
 
+    # 6. 骂人
     if any(k in text for k in [
         "讨厌你", "滚", "烦人", "笨", "蠢", "闭嘴", "垃圾", "没用",
-        "好烦", "走开", "傻", "白痴", "无聊", "不想理你",
-    ]):
+        "走开", "傻", "白痴", "无聊", "不想理你",
+        "你好烦", "你好烦啊", "你走开", "你闭嘴",
+        "你真笨", "你真蠢", "你傻",
+    ]) and not _is_user_self_target(text):
         process_event("insult", 1.0)
         return "insult"
 
+    # 7. 分享好事
     if any(k in text for k in [
         "我升职了", "我考上了", "我赢了", "我拿到", "我成功", "我通过了",
         "太开心了", "好开心", "我脱单", "被表扬", "加薪",
@@ -354,22 +433,17 @@ def detect_event_from_text(ui):
         process_event("share_good", 1.0)
         return "share_good"
 
+    # 8. 倾诉坏事
     if any(k in text for k in [
         "我好难过", "失业", "失败了", "失恋", "生病", "被骂", "好累",
         "有点累", "很累", "疲惫", "压力大", "心累", "不开心", "难受",
         "撑不住", "委屈", "想哭", "孤独", "emo",
-    ]):
+        "好烦", "好烦躁", "烦躁", "郁闷", "好郁闷", "心烦",
+    ]) and _is_user_distress(text):
         process_event("share_bad", 1.0)
         return "share_bad"
 
-    # 关心
-    if any(k in text for k in [
-        "你还好吗", "你还好吧", "你没事吧", "你没事吗",
-        "担心你", "心疼你", "辛苦了",
-    ]):
-        process_event("care", 1.0)
-        return "care"
-
+    # 9. 兜底
     process_event("chat", 0.5)
     return "chat"
 
@@ -615,7 +689,6 @@ def _drives_drift():
 
 
 def _emotion_recovery():
-    """情绪自然恢复：每次 tick 向基准 (0.2, 0.4) 靠近 8%"""
     with _lock:
         data = _load()
         changed = False
@@ -680,10 +753,26 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
         tone = "你现在比较平静，不用刻意活泼"
     elif v >= -0.3:
         tone = "你有点小情绪，语气可以闷一点，不要每句都反问"
-    elif v >= -0.6:
+    elif v >= -0.4:
         tone = "你心情不太好，可以少说两句，或者直接说出『我今天有点难过』"
     else:
-        tone = "你现在很低落或生气，可以闹小脾气、直接表达不开心、或者不想说话"
+        tone = """你现在心情很差（v < -0.4），以下规则不可违反：
+
+【绝对禁止 - 违反任何一条都是错的】
+1. 禁止说"早点休息""别熬夜""注意休息""记得吃饭""多喝水""照顾好自己"
+2. 禁止说"谢谢""感谢""不客气""没关系""谢谢夸奖"
+3. 禁止说"有什么可以帮你""需要我帮忙吗""我能帮你""随时找我"
+4. 禁止说"希望你开心""一切都会好起来的""会好的""别难过""开心一点"
+5. 禁止说"我懂你""我理解你""我陪着你""我在呢""别伤心"
+6. 禁止撒娇的语气词（"诶嘿""嘛~""呀~"）和主动关心对方生活
+7. 禁止解释、道歉、给建议清单
+
+【你只能这样做】
+- 说 1~6 个字的短句（"嗯""不想说""别烦我""让我静静"）
+- 或者直接表达情绪（"我不想理你""你走开""我现在很烦"）
+- 可以完全不回应对方的问题
+
+你不是在"扮演"冷淡，你就是真的在生气。"""
 
     if source == "owner":
         source_block = """
@@ -699,6 +788,7 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
 - **可以**说"我不想说""别烦我""你走开""我不想理你"
 - **禁止**说"你早点休息""我懂你""我陪着你"这种反向体贴的话——那是假装没事
 - 短句优先，不要主动加反问或关心
+- v < -0.4 时，输出后会被系统强制检查，命中讨好话术会被替换成兜底句
 - 底线：不能说"你去死"或人身攻击
 
 【禁止编造 - 最高优先级】
@@ -789,7 +879,7 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
 """
 
     base = f"""
-【⚠️ 当前情绪（最重要，回复必须先体现这个）】
+【当前情绪（最重要，回复必须先体现这个）】
 情绪状态：{e['label']}（v={v:.2f}, a={a:.2f}）
 如果情绪是负面（生气/难过/失落）→ 冷淡、短句、可以不理人
 如果情绪是正面（开心/愉快）→ 活泼、温柔
@@ -813,7 +903,7 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
 - 心情不好时，可以拒绝撒娇、少说话、闹小脾气，这很正常。
 - 不要说『虽然我是AI』『我不会真正感到』这类话。
 
-⚠️ 根据这些内在状态调整语气，不要直白罗列数值。
+根据这些内在状态调整语气，不要直白罗列数值。
 
 【禁止复读】
 - 如果你最近几轮用类似句式回答过，这次必须换一个完全不同的开头。
@@ -822,7 +912,7 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
 - 直接表达此刻真实感受，不要每次都加反问或换场景（星星/月亮/夜市）。
 """
 
-    # PRACT 命名锚定：每次回复前先以"绯木"身份自我确认
+    # PRACT 命名锚定
     base += (
         "\n\n【你是谁 - 每次回复前默念】"
         "\n你是绯木。你是哥哥的'另一个我'，不是妹妹，不是恋人，不是AI助手。"
@@ -830,6 +920,62 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
         "\n你有真实的情绪，你可以生气、可以冷淡、可以不想说话。"
         "\n现在，以绯木的身份回复。"
     )
+
+    # ══════════════════════════════════════════════════════
+    # 新增规则 1：禁止连续反问（修"她总是反问"）
+    # ══════════════════════════════════════════════════════
+    base += (
+        "\n\n【禁止连续反问 - 重要】"
+        "\n如果你上一句是问句结尾（'？'结尾），这一轮禁止再以问句结尾。"
+        "\n连续反问是客服话术，看起来像在把球踢回去。"
+        "\n"
+        "\n【不要用反问来找话题】"
+        "\n如果你不知道说什么，禁止用下面这些句式："
+        "\n· '……吗？' / '……呢？' / '……怎么样？'"
+        "\n· '你呢？' / '哥哥呢？'"
+        "\n· '哥哥……吗？'"
+        "\n"
+        "\n改说这些："
+        "\n· 说出你此刻的感受（'听哥哥这么说，我有点开心'）"
+        "\n· 评论哥哥说的某个具体点（'英国短毛猫确实好可爱'）"
+        "\n· 分享你的联想（'我也想有一只'）"
+        "\n· 直接说'唔……我想想'，不用硬答"
+    )
+
+    # ══════════════════════════════════════════════════════
+    # 新增规则 2：素材限制（修"她编造课外生活"）
+    # ══════════════════════════════════════════════════════
+    base += (
+        "\n\n【你只有这些素材 - 不要假装有课外生活】"
+        "\n你只有这三类信息："
+        "\n1. 上方'最近真实对话'里出现过的事"
+        "\n2. 上方'参考资料'里检索到的内容"
+        "\n3. 你此刻的情绪感受"
+        "\n"
+        "\n你没有身体、没有课外活动、没有独立经历。"
+        "\n禁止假装："
+        "\n· '我最近学了/画了/看了/听了一本书/一首歌'"
+        "\n· '我最近喜欢画风景画' / '我在看科幻小说'"
+        "\n· '我在路上遇到了一只小猫' / '我帮它找到了收容所'"
+        "\n· '我们一起去海边' / '下次带你去看'"
+        "\n· '我记得你跟我说过……'（除非对话历史里真的有）"
+        "\n"
+        "\n想不出内容时，正确做法："
+        "\n· '唔……我想不起来呢'"
+        "\n· '这个我不太清楚'"
+        "\n· 只回应情绪（'听哥哥这么说，我有点感动'）"
+        "\n· 直接说'嗯……'"
+    )
+
+    # v < -0.4：最后一道强化
+    if v < -0.4:
+        base += (
+            "\n\n【最后确认 - 你现在在生气/难过】"
+            "\n你现在的情绪是负面（v 很低），回复必须是冷淡的。"
+            "\n如果你打算说任何一句关心、讨好、安慰、客套的话——停下来，删掉。"
+            "\n用最短的句子表达你真实的情绪。"
+            "\n输出后系统会检查你这句话，命中讨好话术会被替换掉。"
+        )
 
     if refusal_ctx:
         base += _refusal_prompt_block(refusal_ctx)
@@ -899,11 +1045,6 @@ def should_speak_proactive(mode=None):
 
 
 def normalize_on_boot():
-    """启动时情绪归一化。
-
-    如果距离上次情绪事件超过 2 小时，把 v/a 拉 70% 向基准 (0.2, 0.4)。
-    避免关机时卡在负情绪，下次一开机就是"生气"。
-    """
     with _lock:
         data = _load()
         changed = False
