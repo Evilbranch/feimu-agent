@@ -343,6 +343,7 @@ def _is_duplicate(new_content, log):
         if len(old_set) < 3:
             continue
         jaccard = len(new_set & old_set) / len(new_set | old_set)
+        print(f"[判重-DEBUG] 新={new_content[:20]} 旧={old[:20]} jaccard={jaccard:.2f} 阈值={DUP_THRESHOLD}")
         if jaccard > DUP_THRESHOLD:
             return True
     return False
