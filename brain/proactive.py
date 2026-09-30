@@ -59,9 +59,8 @@ def _fallback_message():
 
 
 def _recent_proactive_msgs(s, limit=5):
-    """从 state 里读最近主动消息（proactive + inner_life 合并）"""
-    recent = list(getattr(s, "recent_proactive_msgs", []) or [])
-    # 再合并 inner_life 的最近 speak
+    """最近主动消息（inner_life 老的在前，state 新的在后）"""
+    recent = []
     try:
         from brain.inner_life import _load_log
         log = _load_log()
@@ -70,6 +69,8 @@ def _recent_proactive_msgs(s, limit=5):
                 recent.append(e["content"])
     except Exception:
         pass
+    # state 里的是最近刚发过的，放最后，确保 [-limit:] 能拿到
+    recent += list(getattr(s, "recent_proactive_msgs", []) or [])
     return recent[-limit:]
 
 
@@ -81,7 +82,7 @@ def _record_proactive_msg(s, msg):
     s.recent_proactive_msgs = s.recent_proactive_msgs[-10:]
 
 
-def _too_similar(text, recent_list, threshold=0.55):
+def _too_similar(text, recent_list, threshold=0.45):
     """和最近消息字符集重合度太高就视为重复"""
     if not text:
         return True
@@ -112,6 +113,7 @@ def generate_proactive_message(client, provider, speaker="主人", relation="主
     relation_ctx = get_relation_prompt(speaker, relation)
 
     recent = _recent_proactive_msgs(s, limit=3)
+    # print(f"[主动-DEBUG] 最近 {len(recent)} 条: {recent}")
     recent_str = "\n".join(f"  · {m[:50]}" for m in recent) if recent else "（还没主动说过话）"
 
     prompt = f"""你叫绯木，是哥哥的另一个自己。
