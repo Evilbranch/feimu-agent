@@ -9,11 +9,11 @@ import asyncio
 import atexit
 import signal as _signal
 import threading
-import re as _re
 import random
-from core import api_server
+import re as _re
 
 from core import state, constants
+from core import api_server
 from core.logger import (logger, save_crash_report, check_last_crash,
     mark_running, mark_clean_exit, cleanup_old_crash_reports)
 from core.network import is_online
@@ -23,7 +23,7 @@ from brain.memory import (RAGMemory, load_history, save_history,
     set_slot, get_slot, SLOTS)
 from brain.mood import MoodManager
 from brain.llm import ask_ai, is_sensitive
-# from brain.proactive import proactive_loop
+# from brain.proactive import proactive_loop  # 已停用（方案 A）
 
 from voice import vmc
 from voice.stt import init_whisper_bg, warmup, listen_wake, listen_record, speech_to_text
@@ -518,7 +518,7 @@ def main():
 
         _ensure_tts_api()
 
-            # 预热 TTS 模型（首次合成要 20~30 秒加载）
+        # 预热 TTS 模型（首次合成要 20~30 秒加载）
         def _warmup_tts():
             try:
                 print("[TTS] 预热中（首次需 20~30 秒）...")
@@ -564,10 +564,6 @@ def main():
     cooldown = 0; conv_until = 0
 
     async def life_loop():
-            # 启动 HTTP 服务
-        api_server.set_context(client, provider, history, session_start)
-        api_server.start()
-        print("[API] 已注册上下文")
         while not s.shutdown_flag.is_set():
             if s.life_sim: s.life_sim.update()
             if s.mood_mgr: s.mood_mgr.tick()
@@ -578,8 +574,8 @@ def main():
         loop.run_until_complete(life_loop())
     threading.Thread(target=run_life, daemon=True).start()
 
-    # 注：proactive_loop 已停用，主动消息统一由 inner_life 处理
-    # 保留 proactive.py 文件不删，以防 import 报错
+    # proactive_loop 已停用 —— 主动消息统一由 inner_life 处理
+    # （方案 A：数字生命路线，让她自己决定何时说话）
 
     # 内在生活循环
     from brain.inner_life import inner_life_loop
@@ -601,6 +597,11 @@ def main():
         print("[元认知] 观测器已启动")
     except Exception as e:
         print(f"[元认知] 启动失败: {e}")
+
+    # 启动 HTTP 服务
+    api_server.set_context(client, provider, history, session_start)
+    api_server.start()
+    print("[API] 已注册上下文")
 
     _input_queue = queue.Queue()
     _input_stop = threading.Event()
@@ -901,7 +902,7 @@ def main():
             print("绯木：思考中...", end="\r")
             if tray: tray.set_status("think")
 
-            # 🆕 流式对话
+            # 流式对话
             _sq = queue.Queue(maxsize=3)
 
             def _producer():
@@ -920,7 +921,6 @@ def main():
             _producer_thread = threading.Thread(target=_producer, daemon=True)
             _producer_thread.start()
 
-            # 用 peek 拿首句，方便打印 + 判断是否无回复
             _first_sentence = [None]
             def _peek_first():
                 try:
@@ -942,7 +942,6 @@ def main():
 
             print(f"绯木：（流式输出中）")
 
-            # 播放
             try:
                 from voice.player import speak_stream
                 was_interrupted = asyncio.run(
@@ -953,7 +952,6 @@ def main():
                 was_interrupted = False
 
             _producer_thread.join(timeout=5)
-
 
             # L2：她自己的话反过来影响她的情绪
             if not was_interrupted:
@@ -969,8 +967,7 @@ def main():
                 except Exception as e:
                     print(f"[L2] 异常: {e}")
 
-
-            # MC 打字：从历史里取最后一条 assistant
+            # MC 打字
             if from_mc:
                 try:
                     from tools.minecraft import mc_say
@@ -990,7 +987,7 @@ def main():
                 s.last_interrupted = True
                 print("[打断理解] 已记录，下轮对话她会知道")
 
-            # L4：自我反思（她对自己刚说的话回头感受一下）
+            # L4：自我反思
             if not was_interrupted:
                 try:
                     from brain.self_reflect import reflect_on_own_speech
@@ -1014,7 +1011,6 @@ def main():
                             ))
                 except Exception as e:
                     print(f"[自我反思] 异常: {e}")
-
 
             # 反思触发
             try:
