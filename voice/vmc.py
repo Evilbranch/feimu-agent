@@ -4,6 +4,7 @@ import json
 import time
 import math
 import random
+import socket
 import threading
 import numpy as np
 import websocket
@@ -51,6 +52,15 @@ def detect_emotion(text):
     return "平静"
 
 
+def _port_open(host, port, timeout=0.5):
+    """快速检查端口是否可连（0.5 秒超时）"""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
 # ==================== VTS API 客户端 ====================
 class _VTSClient:
     def __init__(self):
@@ -59,6 +69,7 @@ class _VTSClient:
         self.token = self._load_token()
         self.req_counter = 0
         self._lock = threading.Lock()
+        self._token_hint_shown = False
 
     def _load_token(self):
         try:
@@ -118,7 +129,6 @@ class _VTSClient:
                     self.token = None
                     self._req_token()
             elif t == "InputParameterListResponse":
-                # 🆕 参数列表响应
                 params = data.get("data", {}).get("defaultParameters", [])
                 custom = data.get("data", {}).get("customParameters", [])
                 print("\n========== VTS 可注入参数列表 ==========")
@@ -141,7 +151,9 @@ class _VTSClient:
         except Exception as e:
             print(f"[VTS消息] {e}")
 
-    def _on_error(self, ws, e): pass
+    def _on_error(self, ws, e):
+        # 静默，避免刷屏（worker 会负责重连）
+        pass
 
     def _on_close(self, ws, code, msg):
         if self.connected:
@@ -153,7 +165,9 @@ class _VTSClient:
             "pluginName": PLUGIN_NAME,
             "pluginDeveloper": PLUGIN_DEV,
         })
-        print("[VTS] ⚠️ 请在 VTube Studio 里点击【允许】授权")
+        if not self._token_hint_shown:
+            print("[VTS] ⚠️ 请在 VTube Studio 里点击【允许】授权")
+            self._token_hint_shown = True
 
     def _auth(self):
         self._send("AuthenticationRequest", {
@@ -162,7 +176,8 @@ class _VTSClient:
             "authenticationToken": self.token,
         })
 
-    def connect(self):
+    def _connect_once(self):
+        """单次连接尝试。断开后返回，由外部 worker 控制重连节奏。"""
         url = f"ws://{VTS_HOST}:{VTS_PORT}"
         self.ws = websocket.WebSocketApp(
             url,
@@ -171,8 +186,12 @@ class _VTSClient:
             on_error=self._on_error,
             on_close=self._on_close,
         )
-        t = threading.Thread(target=self.ws.run_forever, daemon=True)
-        t.start()
+        try:
+            self.ws.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception as e:
+            print(f"[VTS] run_forever 异常: {e}")
+        finally:
+            self.connected = False
 
     def inject_params(self, params):
         if not self.connected: return
@@ -184,7 +203,6 @@ class _VTSClient:
         })
 
     def list_parameters(self):
-        """🆕 请求 VTS 返回所有可用参数"""
         self._send("InputParameterListRequest")
 
 
@@ -193,31 +211,36 @@ _client = None
 
 
 def init():
+    """非阻塞初始化：后台线程探测端口，开 VTS 时自动连，没开安静等待。"""
     global _client
     s = state.get_state()
     if not VMC_ENABLED:
         print("[VTS] 已禁用")
         return
-    _client = _VTSClient()
-    _client.connect()
 
-    # 🆕 等最多 60 秒，直到认证成功（首次需要手动点允许）
-    print("[VTS] 正在等待授权...")
-    print("[VTS] ⚠️ 请立刻看 VTube Studio 窗口，弹窗出现时点【允许】")
-    for i in range(120):   # 120 × 0.5s = 60 秒
-        if _client.connected:
-            break
-        time.sleep(0.5)
-        if i == 20:
-            print("[VTS] ⏰ 已等 10 秒，还没看到弹窗？检查 VTS 窗口是否被挡住")
-        if i == 60:
-            print("[VTS] ⏰ 已等 30 秒，弹窗还没出现？")
-    if _client.connected:
-        print("[VTS] ✅ 认证完成，Live2D 控制已激活")
-    else:
-        print("[VTS] ⚠️ 授权超时（60秒），Live2D 控制未激活")
-        print("[VTS]    下次启动时重试，或删掉 data\\vts_token.json 重置")
+    _client = _VTSClient()
     s.vmc_client = _client
+
+    def _worker():
+        while not s.shutdown_flag.is_set():
+            if _client.connected:
+                time.sleep(5)
+                continue
+
+            # 探测端口：没开就安静等，不刷屏
+            if not _port_open(VTS_HOST, VTS_PORT, timeout=0.5):
+                time.sleep(10)
+                continue
+
+            # 端口开着，尝试连
+            print("[VTS] 检测到 VTube Studio 已启动，正在连接...")
+            _client._connect_once()
+
+            # 断开后回到探测（静默 5 秒再探）
+            time.sleep(5)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    print("[VTS] 后台探测已启动（未开 VTS 时会安静等待）")
 
 
 def list_parameters():
@@ -243,7 +266,6 @@ def blink(raw):
     """raw: 0=不眨眼, 1=完全闭眼"""
     if not _client or not _client.connected: return
     v = (1.0 - raw) if BLINK_INVERTED else raw
-    # VTS 追踪参数里：EyeOpenLeft/Right 是 1=睁眼，0=闭眼
     eye_open = 1.0 - v
     _client.inject_params({P_EYE_L: eye_open, P_EYE_R: eye_open})
 
@@ -257,7 +279,7 @@ def head(pitch=0.0, yaw=0.0, roll=0.0):
 
 
 def set_mouth(value):
-    """🆕 设置嘴巴张开程度 0~1"""
+    """设置嘴巴张开程度 0~1"""
     if not _client or not _client.connected: return
     value = max(0.0, min(1.0, float(value)))
     _client.inject_params({P_MOUTH_OPEN: value})
@@ -269,7 +291,7 @@ def _head(pitch=0.0, yaw=0.0, roll=0.0): head(pitch, yaw, roll)
 def _blink(raw): blink(raw)
 
 
-# ==================== 🆕 口型同步 ====================
+# ==================== 口型同步 ====================
 _mouth_stop = threading.Event()
 _mouth_thread = None
 
@@ -311,7 +333,7 @@ def _load_envelope(path, fps=30):
 
 
 def start_mouth_sync(audio_path, fps=30):
-    """🆕 播放音频时启动口型同步"""
+    """播放音频时启动口型同步"""
     global _mouth_thread
     stop_mouth_sync()
     _mouth_stop.clear()
@@ -325,7 +347,6 @@ def start_mouth_sync(audio_path, fps=30):
         for v in env:
             if _mouth_stop.is_set():
                 break
-            # 平滑：微弱信号当闭嘴，放大强信号
             val = max(0.0, min(1.0, float(v) * 1.6))
             set_mouth(val)
             time.sleep(interval)
@@ -336,7 +357,7 @@ def start_mouth_sync(audio_path, fps=30):
 
 
 def stop_mouth_sync():
-    """🆕 停止口型同步"""
+    """停止口型同步"""
     _mouth_stop.set()
     set_mouth(0.0)
 
