@@ -20,7 +20,7 @@ CHECK_INTERVAL = 300         # 首次唤醒延迟（仅用于初始化）
 IDLE_THRESHOLD = 600         # 10 分钟没互动才算"独处"
 MAX_SPEAK_PER_HOUR = 2       # 每小时最多主动 2 次
 MIN_SPEAK_GAP = 900          # 两次主动至少 15 分钟
-DUP_THRESHOLD = 0.75          # Jaccard 相似度 > 0.75 视为重复
+DUP_THRESHOLD = 0.75         # Jaccard 相似度 > 0.75 视为重复（中文标点共享率高，阈值调高）
 
 # 自唤醒边界
 MIN_WAKE = 60                # 最少 1 分钟
@@ -130,7 +130,7 @@ def _build_context(s, history):
     elif 12 <= hour < 14:
         time_hint += "（午休时间）"
 
-    # 🆕 读取元认知 hint
+    # 读取元认知 hint
     meta_hint_str = ""
     try:
         from brain.metacognition import load_hint
@@ -255,9 +255,9 @@ def _ask_intent(client, provider, ctx, retries=3):
             r = client.chat.completions.create(
                 model=provider["model"],
                 messages=msgs,
-                timeout=60,          # 从 120 降到 60
+                timeout=60,
                 temperature=0.6,
-                max_tokens=800,      # 从 500 提到 800
+                max_tokens=800,
                 extra_body={
                     "keep_alive": "30m",
                     "think": False,
@@ -283,7 +283,6 @@ def _ask_intent(client, provider, ctx, retries=3):
             print(f"[内在] ✗ {last_err}，重试...")
             continue
 
-        # 清理 markdown 包裹
         text = re.sub(r'^```[a-zA-Z]*\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
 
@@ -322,7 +321,7 @@ def _is_duplicate(new_content, log):
         # 去掉标点、空白、常见虚词——避免"哥哥""呀""嘛"这种高频字干扰
         _strip = "，。！？!?,.~～；;：:、 \t\n\"'「」『』"
         t = "".join(c for c in t if c not in _strip)
-        for w in ["哥哥", "啦", "呀", "嘛", "哦", "呢", "啦", "诶", "啊"]:
+        for w in ["哥哥", "啦", "呀", "嘛", "哦", "呢", "诶", "啊"]:
             t = t.replace(w, "")
         return t
 
@@ -348,6 +347,7 @@ def _is_duplicate(new_content, log):
             return True
     return False
 
+
 # 编造嫌疑词：出现任何一个，直接否决 speak
 _FABRICATION_WORDS = [
     "我看到", "我听到", "我闻到", "我路过",
@@ -369,6 +369,7 @@ def _is_fabricated(content):
             print(f"[内在] 检测到编造嫌疑词：'{w}'")
             return True
     return False
+
 
 # ==================== explore ====================
 def _do_explore(content, client, provider):
@@ -418,7 +419,6 @@ def _clamp_next_wake(seconds):
         seconds = 1800
     seconds = max(MIN_WAKE, min(MAX_WAKE, seconds))
 
-    # 深夜保护
     hour = time.localtime().tm_hour
     if hour >= NIGHT_START or hour < NIGHT_END:
         seconds = max(seconds, NIGHT_MIN_WAKE)
@@ -430,12 +430,11 @@ def inner_life_loop(client, provider):
     """后台线程：她决定下次什么时候醒"""
     s = state.get_state()
 
-    # 首次唤醒时间
     next_wake_at = time.time() + CHECK_INTERVAL
     print(f"[内在] 自唤醒循环已启动，首次唤醒 {_format_wake_time(CHECK_INTERVAL)} 后")
 
     while not s.shutdown_flag.is_set():
-        s.shutdown_flag.wait(15)  # 每 15 秒检查一次
+        s.shutdown_flag.wait(15)
         if s.shutdown_flag.is_set():
             break
 
@@ -446,17 +445,13 @@ def inner_life_loop(client, provider):
                 next_wake_at = now + 600
                 continue
 
-            # 用户正在互动 → 重置
             if now - getattr(s, "last_interaction_time", 0) < IDLE_THRESHOLD:
                 next_wake_at = now + 300
                 continue
 
-            # 还没到唤醒时间
             if now < next_wake_at:
                 continue
 
-            # ═════════════════════════════════════════
-            # 到时间了，开始判断
             # ═════════════════════════════════════════
             _reset_hourly_if_needed(s)
 
@@ -476,7 +471,6 @@ def inner_life_loop(client, provider):
             next_wake = _clamp_next_wake(decision.get("next_wake", 1800))
             wake_reason = (decision.get("wake_reason") or "").strip()
 
-            # 拦截逻辑
             final_intent = intent
             final_reason = reason
             final_content = content
@@ -517,7 +511,6 @@ def inner_life_loop(client, provider):
                 "wake_reason": wake_reason[:100],
             })
 
-            # 执行
             if final_intent == "speak":
                 with s.proactive_queue_lock:
                     s.proactive_queue.append({
@@ -535,7 +528,6 @@ def inner_life_loop(client, provider):
                         daemon=True
                     ).start()
 
-            # 🆕 应用元认知的调整建议
             try:
                 from brain.metacognition import load_hint
                 h = load_hint()
@@ -550,7 +542,6 @@ def inner_life_loop(client, provider):
             except:
                 pass
 
-            # 设置下次唤醒
             next_wake_at = time.time() + next_wake
 
         except Exception as e:
