@@ -1,4 +1,4 @@
-# ===== 敏感数据（最重要）=====
+# ===== 敏感数据（第二道防线，robocopy 已排除）=====
 data/
 data_wechat/
 creds.json
@@ -9,7 +9,6 @@ config.json
 _check.txt
 requirements_raw.txt
 Modelfile
-*.bak
 
 # ===== 依赖 / 大文件 =====
 lib/
@@ -42,5 +41,6 @@ crash_*/
 backup/
 backups/
 _archive/
+*.bak
 *.orig
 *.rej
