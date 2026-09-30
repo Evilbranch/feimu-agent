@@ -1,0 +1,24 @@
+# ===== 以下保留忽略（大文件/垃圾）=====
+lib/
+bin/
+models/
+*.exe
+*.dll
+unins000.*
+minecraft/node_modules/
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.vscode/
+.idea/
+*.log
+logs/
+crash_*/
+Thumbs.db
+.DS_Store
+*.tmp
+*.bak
+_check.txt

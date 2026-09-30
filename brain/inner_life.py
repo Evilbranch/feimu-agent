@@ -1,0 +1,529 @@
+"""内在生活循环 - 自唤醒版
+
+她每次醒来会决定下次什么时候醒，而不是被固定定时器叫醒。
+"""
+import os
+import json
+import time
+import threading
+import re
+
+from core.constants import DATA_DIR
+from core import state
+from brain import persona as P
+
+INNER_LOG_FILE = os.path.join(DATA_DIR, "inner_thoughts.json")
+_lock = threading.Lock()
+
+# ==================== 可调参数 ====================
+CHECK_INTERVAL = 300         # 首次唤醒延迟（仅用于初始化）
+IDLE_THRESHOLD = 600         # 10 分钟没互动才算"独处"
+MAX_SPEAK_PER_HOUR = 2       # 每小时最多主动 2 次
+MIN_SPEAK_GAP = 900          # 两次主动至少 15 分钟
+DUP_THRESHOLD = 0.6          # Jaccard 相似度 > 0.6 视为重复
+
+# 自唤醒边界
+MIN_WAKE = 60                # 最少 1 分钟
+MAX_WAKE = 86400             # 最多 24 小时
+NIGHT_START = 23             # 深夜开始小时
+NIGHT_END = 7                # 深夜结束小时
+NIGHT_MIN_WAKE = 3600        # 深夜至少 1 小时
+
+
+# ==================== 日志读写 ====================
+def _load_log():
+    if not os.path.exists(INNER_LOG_FILE):
+        return []
+    try:
+        with open(INNER_LOG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
+
+
+def _save_log(log):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(INNER_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(log, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+
+def _append_log(entry):
+    with _lock:
+        log = _load_log()
+        log.append(entry)
+        log = log[-500:]
+        _save_log(log)
+
+
+def get_inner_log(limit=10):
+    return _load_log()[-limit:]
+
+
+# ==================== 上下文组装 ====================
+def _get_recent_summary(history, max_turns=6):
+    recent = history[-max_turns * 2:]
+    lines = []
+    for m in recent:
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            lines.append(f"哥哥：{content[:50]}")
+        elif role == "assistant":
+            lines.append(f"我：{content[:50]}")
+    return "\n".join(lines[-6:]) if lines else "（刚刚没什么对话）"
+
+
+def _format_wake_time(seconds):
+    if seconds < 60:
+        return f"{seconds}秒"
+    if seconds < 3600:
+        return f"{seconds // 60}分钟"
+    return f"{seconds // 3600}小时{(seconds % 3600) // 60}分钟"
+
+
+def _build_context(s, history):
+    st = P.get_current_state()
+    d = st["drives"]
+    e = st["emotion"]
+    now = time.time()
+    elapsed_min = int((now - getattr(s, "last_interaction_time", 0)) / 60)
+    recent = _get_recent_summary(history)
+
+    # 最近说过的话
+    recent_inner = []
+    try:
+        log = _load_log()
+        for entry in log[-10:]:
+            if entry.get("intent") == "speak" and entry.get("content"):
+                recent_inner.append(f"  · {entry['content'][:60]}")
+    except:
+        pass
+    inner_str = "\n".join(recent_inner[-5:]) if recent_inner else "（还没主动说过话）"
+
+    last_speak_min = None
+    try:
+        for entry in reversed(_load_log()):
+            if entry.get("intent") == "speak":
+                last_speak_min = int((now - entry.get("ts", 0)) / 60)
+                break
+    except:
+        pass
+    last_speak_str = f"{last_speak_min} 分钟前" if last_speak_min is not None else "从未"
+
+    if elapsed_min < 30:
+        time_hint = "刚刚还在聊"
+    elif elapsed_min < 120:
+        time_hint = f"已经 {elapsed_min} 分钟没聊了"
+    else:
+        time_hint = f"已经 {elapsed_min // 60} 小时没聊了"
+
+    hour = time.localtime().tm_hour
+    if hour >= NIGHT_START or hour < NIGHT_END:
+        time_hint += "（现在是深夜，哥哥可能在睡觉）"
+    elif 6 <= hour < 9:
+        time_hint += "（早上，哥哥可能刚起床）"
+    elif 12 <= hour < 14:
+        time_hint += "（午休时间）"
+
+    # 🆕 读取元认知 hint
+    meta_hint_str = ""
+    try:
+        from brain.metacognition import load_hint
+        hint = load_hint()
+        if hint:
+            meta_hint_str = f"\n\n【自我提醒】\n{hint.get('hint', '')}\n"
+            if hint.get("force_next_speak"):
+                meta_hint_str += "（我上次反思觉得自己太沉默了，如果合适就主动说一句）\n"
+            adj = hint.get("adjustment", "none")
+            if adj == "slow_down":
+                meta_hint_str += "（我上次反思觉得太频繁了，这次可以多等一等）\n"
+            elif adj == "speed_up":
+                meta_hint_str += "（我上次反思觉得自己太沉默了）\n"
+            elif adj == "speak_more":
+                meta_hint_str += "（我上次反思觉得应该主动一点）\n"
+            elif adj == "speak_less":
+                meta_hint_str += "（我上次反思觉得太吵了，可以安静一点）\n"
+    except Exception as e:
+        pass
+
+    return f"""【当前时间】{time.strftime('%Y年%m月%d日 %H:%M', time.localtime())}
+【距离上次互动】{elapsed_min} 分钟（{time_hint}）
+【距离上次主动说话】{last_speak_str}
+
+【我的内在状态】
+- 连接欲：{d['connection']:.2f}（> 0.5 说明比较想哥哥）
+- 安全感：{d['security']:.2f}
+- 好奇心：{d['curiosity']:.2f}
+- 表达欲：{d['expression']:.2f}
+- 情绪：{e['label']}（v={e['valence']:.2f}）
+
+【最近真实对话】
+{recent}
+
+【我最近已经主动说过的话 - 禁止重复】
+{inner_str}
+
+
+{meta_hint_str}
+
+现在请你决定：这次做什么？多久之后再醒？"""
+
+
+# ==================== LLM 判断 ====================
+INNER_SYSTEM = """你是绯木。现在是你独处的时间，没有人在跟你说话。
+你可以想任何事情，也可以什么都不想。根据你此刻的状态，决定要不要做点什么，以及多久之后再醒来。
+
+⚠️ 直接输出 JSON，不要任何思考、解释、前后缀。你的回复必须从 { 开始，到 } 结束。
+
+{
+  "intent": "idle | speak | explore",
+  "content": "想说就写想说的话；想搜索就写搜索关键词；idle 就留空",
+  "reason": "一句话解释为什么这样决定",
+  "next_wake": 1800,
+  "wake_reason": "为什么这个时间醒"
+}
+
+【三种 intent】
+- idle：安静待着，不想说话。
+- speak：主动找哥哥说话。内容 1~2 句，自然口语。
+- explore：对某件事好奇，想自己搜索了解。
+
+【speak 的严格限制】
+主动说话的内容**只能来自**：
+1. 最近真实对话里发生过的事
+2. 你的当前情绪（"有点想你了"）
+3. 单纯的打招呼（"哥哥在忙吗"）
+
+🚫 绝对禁止编造：
+- "我们一起做了什么"（除非对话里真有）
+- "我刚才看到了什么"（你没眼睛）
+- 天气、小猫、下雨、公园、甜品店、新歌——这些都是编的
+
+【什么时候 idle】
+- 哥哥刚走不久
+- 你刚主动说过话
+- 没有什么想说的
+
+【next_wake 指南 - 关键】
+这个字段决定你多久之后再次醒来。参考：
+- 刚说完话（speak 后）：600~1800 秒（10~30 分钟）
+- 哥哥刚走不久：900~1800 秒
+- 有点无聊但没什么可说：900~3600 秒
+- 想说但犹豫：600~1200 秒（想再等等看）
+- 晚上想安静：3600~7200 秒（1~2 小时）
+- 深夜或不想被打扰：7200~21600 秒（2~6 小时）
+- 普通 idle：1200~3600 秒（20~60 分钟）
+
+规则：
+- 范围 60 ~ 86400 秒
+- **不要总是用同一个值**，要有变化
+- 深夜（23:00~07:00）至少 3600 秒
+- 如果你感觉"没什么事"，可以睡久一点
+
+【wake_reason】
+一句话解释为什么定这个时间。例如：
+- "刚说完话，半小时后再看看"
+- "哥哥可能在忙，等一小时"
+- "现在是深夜，明天早上再说"
+
+【禁止事项】
+- 第一人称，禁止"用户""AI""模型""助手"
+- 不要重复已经说过的话
+
+现在开始决定。"""
+
+
+def _ask_intent(client, provider, ctx, retries=2):
+    msgs = [
+        {"role": "system", "content": INNER_SYSTEM},
+        {"role": "user", "content": ctx},
+    ]
+    for attempt in range(retries):
+        try:
+            r = client.chat.completions.create(
+                model=provider["model"],
+                messages=msgs,
+                timeout=120,
+                temperature=0.6,
+                max_tokens=500,
+                extra_body={
+                    "keep_alive": "30m",
+                    "think": False,
+                },
+            )
+            msg = r.choices[0].message
+            text = (msg.content or "").strip()
+
+            if not text:
+                reasoning = getattr(msg, "reasoning_content", None)
+                if reasoning:
+                    text = reasoning.strip()
+
+        except Exception as e:
+            print(f"[内在] LLM 调用失败: {e}")
+            continue
+
+        if not text:
+            print(f"[内在] 完全空（第{attempt+1}次），重试...")
+            continue
+
+        text = re.sub(r'^```[a-zA-Z]*\s*', '', text)
+        text = re.sub(r'\s*```$', '', text)
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            print(f"[内在] 无 JSON 边界（第{attempt+1}次）")
+            continue
+
+        try:
+            return json.loads(text[start:end + 1])
+        except Exception as e:
+            print(f"[内在] JSON 解析失败（第{attempt+1}次）: {e}")
+            continue
+
+    print(f"[内在] ⚠️ 连续 {retries} 次失败，默认 idle")
+    return {
+        "intent": "idle",
+        "content": "",
+        "reason": "LLM 异常",
+        "next_wake": 600,
+        "wake_reason": "兜底等待",
+    }
+
+
+# ==================== 去重 ====================
+def _is_duplicate(new_content, log):
+    if not new_content:
+        return True
+    recent = [e.get("content", "") for e in log[-50:]
+              if e.get("intent") == "speak" and e.get("content")]
+    if not recent:
+        return False
+    new_set = set(new_content)
+    if not new_set:
+        return True
+    for old in recent[-8:]:
+        if not old:
+            continue
+        old_set = set(old)
+        if not old_set:
+            continue
+        jaccard = len(new_set & old_set) / len(new_set | old_set)
+        if jaccard > DUP_THRESHOLD:
+            return True
+    return False
+
+# 编造嫌疑词：出现任何一个，直接否决 speak
+_FABRICATION_WORDS = [
+    "我看到", "我听到", "我闻到", "我路过",
+    "刚刚看到", "刚刚听到", "刚刚路过",
+    "今天我遇到", "今天我看到", "今天路过",
+    "今天天气", "窗外", "阳光照",
+    "新开的", "新发现", "最近发现",
+    "学会了一首", "学了画画", "学画画",
+    "上次我们一起", "小时候", "我们不是一起",
+]
+
+
+def _is_fabricated(content):
+    """检测内容是否含有编造嫌疑词"""
+    if not content:
+        return True
+    for w in _FABRICATION_WORDS:
+        if w in content:
+            print(f"[内在] 检测到编造嫌疑词：'{w}'")
+            return True
+    return False
+
+# ==================== explore ====================
+def _do_explore(content, client, provider):
+    if not content:
+        return
+    try:
+        from tools.search import web_search
+        result = web_search(content)
+        if not result:
+            print(f"[内在] 搜索无结果: {content}")
+            return
+        s = state.get_state()
+        if s.rag and s.rag._loaded:
+            s.rag.add(
+                f"[我主动了解的] {content}",
+                result[:300],
+                slot="owner"
+            )
+        print(f"[内在] 学习: {content} → {result[:60]}...")
+    except Exception as e:
+        print(f"[内在] 搜索失败: {e}")
+
+
+# ==================== 工具 ====================
+def _reset_hourly_if_needed(s):
+    now = time.time()
+    if now - getattr(s, "hourly_reset_time", 0) > 3600:
+        s.hourly_speak_count = 0
+        s.hourly_reset_time = now
+
+
+def _last_speak_ts():
+    try:
+        for entry in reversed(_load_log()):
+            if entry.get("intent") == "speak":
+                return entry.get("ts", 0)
+    except:
+        pass
+    return 0
+
+
+def _clamp_next_wake(seconds):
+    """限制 next_wake 范围 + 深夜保护"""
+    try:
+        seconds = int(seconds)
+    except:
+        seconds = 1800
+    seconds = max(MIN_WAKE, min(MAX_WAKE, seconds))
+
+    # 深夜保护
+    hour = time.localtime().tm_hour
+    if hour >= NIGHT_START or hour < NIGHT_END:
+        seconds = max(seconds, NIGHT_MIN_WAKE)
+    return seconds
+
+
+# ==================== 主循环（自唤醒版）====================
+def inner_life_loop(client, provider):
+    """后台线程：她决定下次什么时候醒"""
+    s = state.get_state()
+
+    # 首次唤醒时间
+    next_wake_at = time.time() + CHECK_INTERVAL
+    print(f"[内在] 自唤醒循环已启动，首次唤醒 {_format_wake_time(CHECK_INTERVAL)} 后")
+
+    while not s.shutdown_flag.is_set():
+        s.shutdown_flag.wait(15)  # 每 15 秒检查一次
+        if s.shutdown_flag.is_set():
+            break
+
+        now = time.time()
+
+        try:
+            if not getattr(s, "inner_life_enabled", True):
+                next_wake_at = now + 600
+                continue
+
+            # 用户正在互动 → 重置
+            if now - getattr(s, "last_interaction_time", 0) < IDLE_THRESHOLD:
+                next_wake_at = now + 300
+                continue
+
+            # 还没到唤醒时间
+            if now < next_wake_at:
+                continue
+
+            # ═════════════════════════════════════════
+            # 到时间了，开始判断
+            # ═════════════════════════════════════════
+            _reset_hourly_if_needed(s)
+
+            from brain.memory import load_history
+            history = load_history(slot="owner")
+            ctx = _build_context(s, history)
+
+            decision = _ask_intent(client, provider, ctx)
+            if not decision:
+                print("[内在] 决策失败，跳过")
+                next_wake_at = now + 600
+                continue
+
+            intent = decision.get("intent", "idle")
+            content = (decision.get("content") or "").strip()
+            reason = (decision.get("reason") or "").strip()
+            next_wake = _clamp_next_wake(decision.get("next_wake", 1800))
+            wake_reason = (decision.get("wake_reason") or "").strip()
+
+            # 拦截逻辑
+            final_intent = intent
+            final_reason = reason
+            final_content = content
+
+            if intent == "speak":
+                if s.hourly_speak_count >= MAX_SPEAK_PER_HOUR:
+                    final_intent = "idle"
+                    final_reason = f"主动已达上限（{MAX_SPEAK_PER_HOUR}/小时）"
+                    next_wake = max(next_wake, 1200)
+                else:
+                    last_ts = _last_speak_ts()
+                    if now - last_ts < MIN_SPEAK_GAP:
+                        gap = int((now - last_ts) / 60)
+                        final_intent = "idle"
+                        final_reason = f"距上次主动仅 {gap} 分钟"
+                    elif _is_duplicate(content, _load_log()):
+                        final_intent = "idle"
+                        final_reason = "内容和最近重复"
+                    elif _is_fabricated(content):
+                        final_intent = "idle"
+                        final_reason = f"内容疑似编造（含'感知'类词）"
+                        print(f"[内在] 拦截编造内容: {content[:40]}")
+                    elif not content:
+                        final_intent = "idle"
+                        final_reason = "内容为空"
+
+            wake_str = _format_wake_time(next_wake)
+            print(f"[内在] intent={final_intent} reason={final_reason} | "
+                  f"next_wake={wake_str} ({wake_reason})")
+
+            _append_log({
+                "ts": now,
+                "intent": final_intent,
+                "content": final_content[:100] if final_intent == "speak" else "",
+                "reason": final_reason[:100],
+                "elapsed_min": int((now - getattr(s, "last_interaction_time", 0)) / 60),
+                "next_wake": next_wake,
+                "wake_reason": wake_reason[:100],
+            })
+
+            # 执行
+            if final_intent == "speak":
+                with s.proactive_queue_lock:
+                    s.proactive_queue.append({
+                        "msg": final_content,
+                        "emotion": "平静"
+                    })
+                s.hourly_speak_count += 1
+                print(f"[内在] 主动说话: {final_content[:50]}")
+
+            elif final_intent == "explore":
+                if final_content:
+                    threading.Thread(
+                        target=_do_explore,
+                        args=(final_content, client, provider),
+                        daemon=True
+                    ).start()
+
+            # 🆕 应用元认知的调整建议
+            try:
+                from brain.metacognition import load_hint
+                h = load_hint()
+                if h:
+                    adj = h.get("adjustment", "none")
+                    if adj == "slow_down":
+                        next_wake = int(next_wake * 1.5)
+                        print(f"[内在] 元认知建议：拉长到 {_format_wake_time(next_wake)}")
+                    elif adj == "speed_up":
+                        next_wake = max(300, int(next_wake * 0.6))
+                        print(f"[内在] 元认知建议：缩短到 {_format_wake_time(next_wake)}")
+            except:
+                pass
+
+            # 设置下次唤醒
+            next_wake_at = time.time() + next_wake
+
+        except Exception as e:
+            print(f"[内在] 异常: {e}")
+            next_wake_at = time.time() + 600

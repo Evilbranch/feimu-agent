@@ -1,0 +1,11 @@
+{
+  "name": "feimu-minecraft",
+  "version": "1.0.0",
+  "description": "绯木 Minecraft Bot",
+  "main": "bot.js",
+  "dependencies": {
+    "mineflayer": "^4.20.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "ws": "^8.18.0"
+  }
+}
