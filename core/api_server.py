@@ -172,6 +172,16 @@ def _handle_wechat_message(text):
     if not rep:
         rep = "……"
 
+    # 方案三：KOKKI 输出审计
+    try:
+        from brain.output_audit import audit_output, SAFE_REPLY
+        _suspicious, _reasons = audit_output(rep)
+        if _suspicious:
+            print(f"[审计] 编造嫌疑: {_reasons} | 原文: {rep[:60]}")
+            rep = SAFE_REPLY
+    except Exception as e:
+        print(f"[审计] 异常: {e}")
+
     print(f"[API→微信] {rep}")
 
     # L2：她自己的话影响情绪

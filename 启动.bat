@@ -16,6 +16,8 @@ echo   4. Voice mode + Minecraft
 echo   5. Start TTS API
 echo   6. Start WeChat
 echo   7. Stop all
+echo   8. Full stack - Text (TTS + Text + WeChat)
+echo   9. Full stack - Voice (TTS + Voice + WeChat)
 echo   0. Exit
 echo.
 echo ========================================
@@ -28,6 +30,8 @@ if "%choice%"=="4" goto voice_mc
 if "%choice%"=="5" goto start_api
 if "%choice%"=="6" goto start_wechat
 if "%choice%"=="7" goto stop_all
+if "%choice%"=="8" goto full_text
+if "%choice%"=="9" goto full_voice
 if "%choice%"=="0" exit
 goto menu
 
@@ -82,6 +86,68 @@ goto end
 cd /d F:\Ollama
 start "Feimu-WeChat" cmd /k "chcp 65001 >nul && py wechat_bot.py"
 goto end
+
+:full_text
+cls
+echo === Full stack: TTS + Text + WeChat ===
+echo.
+echo [1/3] Starting TTS API...
+cd /d F:\GPT-SoVITS-v2-240821
+start "TTS API" cmd /k "chcp 65001 >nul && .\runtime\python.exe api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS\configs\tts_infer.yaml"
+echo     Waiting 8s for TTS to load...
+timeout /t 8 /nobreak >nul
+
+echo [2/3] Starting Feimu (text mode)...
+cd /d F:\Ollama
+start "Feimu-Text" cmd /k "chcp 65001 >nul && py my_ai.py --text"
+echo     Waiting 5s...
+timeout /t 5 /nobreak >nul
+
+echo [3/3] Starting WeChat...
+start "Feimu-WeChat" cmd /k "chcp 65001 >nul && py wechat_bot.py"
+
+echo.
+echo ========================================
+echo   All launched!
+echo   - TTS API window
+echo   - Feimu-Text window
+echo   - Feimu-WeChat window
+echo ========================================
+echo.
+echo Closing in 3 seconds...
+timeout /t 3 /nobreak >nul
+exit
+
+:full_voice
+cls
+echo === Full stack: TTS + Voice + WeChat ===
+echo.
+echo [1/3] Starting TTS API...
+cd /d F:\GPT-SoVITS-v2-240821
+start "TTS API" cmd /k "chcp 65001 >nul && .\runtime\python.exe api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS\configs\tts_infer.yaml"
+echo     Waiting 8s for TTS to load...
+timeout /t 8 /nobreak >nul
+
+echo [2/3] Starting Feimu (voice mode)...
+cd /d F:\Ollama
+start "Feimu-Voice" cmd /k "chcp 65001 >nul && py my_ai.py --voice"
+echo     Waiting 5s...
+timeout /t 5 /nobreak >nul
+
+echo [3/3] Starting WeChat...
+start "Feimu-WeChat" cmd /k "chcp 65001 >nul && py wechat_bot.py"
+
+echo.
+echo ========================================
+echo   All launched!
+echo   - TTS API window
+echo   - Feimu-Voice window
+echo   - Feimu-WeChat window
+echo ========================================
+echo.
+echo Closing in 3 seconds...
+timeout /t 3 /nobreak >nul
+exit
 
 :stop_all
 call :_clean_node

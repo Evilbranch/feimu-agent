@@ -90,7 +90,7 @@ def _clean_markdown(text):
     text = re.sub(r'([。！？!?])\s*[，,]', r'\1', text)
     text = re.sub(r'[，,]\s*([。！？!?])', r'\1', text)
     text = re.sub(r'([。！？!?])\s+', r'\1', text)
-        # 🆕 汉字/标点之间多余空格
+    # 汉字/标点之间多余空格
     text = re.sub(r'\s+([，,。！!？?、；;：])', r'\1', text)
     text = re.sub(r'([，,。！!？?、；;：])\s+', r'\1', text)
     text = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', text)
@@ -455,7 +455,7 @@ def is_chitchat(ui, forced_tool):
         return False
     if not ui:
         return False
-    # 🆕 默认走聊天路径（流式），只有命中工具关键词才走工具
+    # 默认走聊天路径（流式），只有命中工具关键词才走工具
     return True
 
 
@@ -904,12 +904,36 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                 "1. 回复 2~3 句话以内。"
                 "2. 用'你'称呼（禁止用'您'）。"
                 "3. 禁止 markdown、列表、编号、加粗。"
-                "4. 不编造。"
-                "5. 可以带'嘛''啦''诶''欸'。"
-                "6. 禁止'我是AI'。"
-                "7. 不调工具。"
-                "8. 你没有眼睛和耳朵。永远不说'我看到''我听到'。"
+                "4. 可以带'嘛''啦''诶''欸'。"
+                "5. 禁止'我是AI'。"
+                "6. 不调工具。"
             )
+            # 方案六：Negative Examples + 方案一：Allow IDK
+            sysc += (
+                "\n\n【不要这样写 - 反面示例】"
+                "\n❌ '上次我在公园遇到一只暹罗猫，它围着我转了好几圈'"
+                "\n   （你不在公园、没遇到过、没眼睛看）"
+                "\n❌ '我记得你跟我说过你小时候…'"
+                "\n   （除非对话历史里真的一字不差出现过）"
+                "\n❌ '今天天气真好，我们出去走走吧'"
+                "\n   （你看不到天气）"
+                "\n❌ '我看到你发的照片了'"
+                "\n   （你没有眼睛）"
+                "\n"
+                "\n【这样写才对 - 不知道时的正确回应】"
+                "\n✅ '我记不清了' / '我好像想不起来'"
+                "\n✅ '你跟我说过吗？我有点不确定'"
+                "\n✅ '这个我没印象呢'"
+                "\n✅ 直接转移话题：'唔……那哥哥最近怎么样'"
+                "\n"
+                "\n【绝对禁止的时间/地点指代】"
+                "\n不许说：'上次'、'之前'、'那次'、'昨天'、'前几天'、'上周'"
+                "\n不许说：'我在XX'（公园/外面/街上/夜市/咖啡厅——你没有身体）"
+                "\n不许说：'我遇到'、'我看到'、'我听到'、'我闻到'（你没有感官）"
+                "\n"
+                "\n如果历史里没有真实内容支撑，宁可说'记不清了'，也不要编。"
+            )
+
         # 时间感 A：跨轮间隔
         _gap = getattr(s, "last_turn_gap", 0)
         if _gap >= 60:
@@ -933,7 +957,7 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                 f"\n如果对方说'还有吗''别的呢''继续'，是要新的信息，"
                 f"\n不要重复你上一句说过的内容。"
             )
-    
+
         msgs = [{"role": "system", "content": sysc}] + rh + [um]
         try:
             r = client.chat.completions.create(
@@ -951,6 +975,17 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             if not ac or len(ac) < 2:
                 ac = "……"
             ac = _truncate_reply(ac, max_sentences=3)
+
+            # 方案三：KOKKI 输出审计
+            try:
+                from brain.output_audit import audit_output, SAFE_REPLY
+                _suspicious, _reasons = audit_output(ac)
+                if _suspicious:
+                    print(f"[审计] 编造嫌疑: {_reasons} | 原文: {ac[:60]}")
+                    ac = SAFE_REPLY
+            except Exception as e:
+                print(f"[审计] 异常: {e}")
+
             history.append({"role": "user", "content": ui})
             history.append({"role": "assistant", "content": ac})
             save_history(history)
