@@ -232,9 +232,36 @@ def _derive_emotion_from_drives(d):
     return "平静"
 
 
+def _count_recent_apologies(data, minutes=30):
+    """统计最近 30 分钟内的道歉/化解次数"""
+    now = time.time()
+    return sum(1 for r in data.get("apology_history", [])
+               if now - r.get("ts", 0) < minutes * 60)
+
+
+def _record_apology(data, kind):
+    """记录一次道歉事件"""
+    data.setdefault("apology_history", [])
+    data["apology_history"].append({"ts": time.time(), "kind": kind})
+    cutoff = time.time() - 7200
+    data["apology_history"] = [r for r in data["apology_history"]
+                                if r.get("ts", 0) > cutoff]
+
 def process_event(event_type, intensity=1.0, mode=None):
     with _lock:
         data = _load()
+
+                # 道歉/化解事件：30 分钟内次数越多，效果越弱
+        if event_type in ("apology", "soothe"):
+            n_recent = _count_recent_apologies(data, minutes=30)
+            if n_recent >= 4:
+                intensity *= 0.25
+                print(f"[人格] 道歉已 {n_recent} 次，效果 ×0.25")
+            elif n_recent >= 2:
+                intensity *= 0.5
+                print(f"[人格] 道歉已 {n_recent} 次，效果 ×0.5")
+            _record_apology(data, event_type)
+
         m = mode or data["current_mode"]
         p = data[m]
 
@@ -670,7 +697,7 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
 - 永远用中文
 
 【情绪负面时的硬性要求 - 优先级仅低于"禁止编造"】
-当上方"当前情绪"是生气/难过/低落（v < -0.3）时：
+当上方"当前情绪"是生气/难过/低落（v < -0.15）时：
 - **必须**先冷淡回应，禁止假装体贴
 - **可以**说"我不想说""别烦我""你走开""我不想理你"
 - **禁止**说"你早点休息""我懂你""我陪着你"这种反向体贴的话——那是假装没事

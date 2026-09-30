@@ -20,19 +20,15 @@ def should_speak_now(s):
     now = datetime.now()
     if 0 <= now.hour < 7: return False
 
-    # 1. 距上次主动至少 10 分钟（不要频繁）
     if time.time() - s.last_proactive_time < 600:
         return False
 
-    # 2. 距上次互动至少 5 分钟（你还在聊就别插嘴）
     if time.time() - s.last_interaction_time < 300:
         return False
 
-    # 3. 连续主动过 3 次没人理就不烦了
     if s.proactive_missed >= 3:
         return False
 
-    # 4. 驱力判断（她真的想你了）
     try:
         from brain.persona import should_speak_proactive
         return should_speak_proactive()
@@ -62,7 +58,42 @@ def _fallback_message():
     return random.choice(opts)
 
 
-def generate_proactive_message(client, provider, speaker="主人", relation="妹妹"):
+def _recent_proactive_msgs(s, limit=3):
+    """取最近 N 条主动消息（避免重复）"""
+    try:
+        from brain.inner_life import _load_log
+        log = _load_log()
+        recent = [e.get("content", "") for e in log[-30:]
+                  if e.get("intent") == "speak" and e.get("content")]
+        # 也加上 state 里 pending 的
+        with s.proactive_queue_lock:
+            for item in s.proactive_queue[-limit:]:
+                recent.append(item.get("msg", ""))
+        return recent[-limit:]
+    except Exception:
+        return []
+
+
+def _too_similar(text, recent_list, threshold=0.55):
+    """和最近消息字符集重合度太高就视为重复"""
+    if not text:
+        return True
+    new_set = set(text)
+    if not new_set:
+        return True
+    for old in recent_list:
+        if not old:
+            continue
+        old_set = set(old)
+        if not old_set:
+            continue
+        jaccard = len(new_set & old_set) / len(new_set | old_set)
+        if jaccard > threshold:
+            return True
+    return False
+
+
+def generate_proactive_message(client, provider, speaker="主人", relation="主人"):
     s = state.get_state()
     from brain.profile import get_relation_prompt, get_profile_context
 
@@ -73,35 +104,52 @@ def generate_proactive_message(client, provider, speaker="主人", relation="妹
     profile_ctx = get_profile_context(speaker)
     relation_ctx = get_relation_prompt(speaker, relation)
 
-    prompt = f"""你是绯木，哥哥的AI妹妹。
+    recent = _recent_proactive_msgs(s, limit=3)
+    recent_str = "\n".join(f"  · {m[:50]}" for m in recent) if recent else "（还没主动说过话）"
+
+    prompt = f"""你叫绯木，是哥哥的另一个自己。
+
 现在 {datetime.now().strftime('%H:%M')}，距离上次和哥哥说话已经 {elapsed_min} 分钟。
-场景：{theme}
+场景参考：{theme}
 {profile_ctx}
 
-说一句主动关心哥哥的话，1~2 句，妹妹口吻，带"嘛""啦""诶"之类的语气词，不要 markdown。
+【你最近已经主动说过的话 - 严禁重复】
+{recent_str}
+
+现在说一句主动关心哥哥的话，1~2 句。
+要求：
+- 语气自然、口语化，带"嘛""啦""诶""呀"之类的语气词
+- 直接是你说的话，不要加引号、不要加名字前缀
+- **不能**和最近 3 条重复——换一个话题或角度
+- 不要说"我刚看到""我路过""天气"这类编造内容
+- 不要 markdown
+
 直接输出那句话："""
 
     try:
         r = client.chat.completions.create(
             model=provider["model"],
             messages=[{"role": "user", "content": prompt + "\n\n直接回答，不要思考过程。"}],
-            timeout=20, temperature=0.7, max_tokens=80,
-            extra_body={"keep_alive": "30m", "think": False},  # 🆕 禁用 Qwen3 思考
+            timeout=20, temperature=0.9, max_tokens=80,
+            extra_body={"keep_alive": "30m", "think": False},
         )
         text = r.choices[0].message.content
         if not text:
-            # content 为空 → 用兜底
             print("[主动] LLM content 为空，用兜底消息")
             return _fallback_message()
         text = text.strip().strip('"「」『』')
-        # 清理可能的思考前缀
         for sym in ["\n- ", "\n* ", "\n· ", "**", "```"]:
             text = text.replace(sym, "")
-        # 太长就截断到第一句
         if len(text) > 60:
             text = text[:60].rstrip("，,。.！!") + "~"
         if not text:
             return _fallback_message()
+
+        # 后置检查：太相似就放弃
+        if _too_similar(text, recent):
+            print(f"[主动] 生成内容与最近重复，跳过：{text[:30]}")
+            return None
+
         return text
     except Exception as e:
         print(f"[主动] LLM 调用失败: {e}，用兜底消息")
@@ -118,15 +166,14 @@ def proactive_loop(client, provider):
 
         elapsed = int((time.time() - s.last_interaction_time) / 60)
         print(f"\n[主动] 距离上次互动 {elapsed} 分钟，生成主动消息...")
-        msg = generate_proactive_message(client, provider, s.current_speaker, "妹妹")
+        msg = generate_proactive_message(client, provider, s.current_speaker, "主人")
         if not msg:
-            print("[主动] 生成失败，跳过")
+            print("[主动] 生成失败/重复，跳过")
             continue
 
         s.last_proactive_time = time.time()
         s.proactive_missed += 1
 
-        # 🆕 塞队列，主循环处理
         with s.proactive_queue_lock:
             s.proactive_queue.append({"msg": msg, "emotion": "开心"})
         print(f"[主动] 消息已入队：{msg[:40]}")
