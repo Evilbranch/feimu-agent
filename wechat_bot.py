@@ -253,13 +253,21 @@ def main():
         print("[微信] 首次登录，请扫码...")
         bot = WeixinBot.from_login(save_to=creds_path)
 
-    ok, ready = _health()
+    # 启动时重试 10 次（最多等 30 秒），避免电脑端预热期误报
+    ok, ready = False, False
+    for i in range(10):
+        ok, ready = _health()
+        if ok and ready:
+            break
+        print(f"[大脑] 探测中... ({i+1}/10)")
+        time.sleep(3)
+
     if ok and ready:
         print(f"[大脑] ✅ 电脑端在线 ({BRAIN_URL})")
     elif ok:
-        print(f"[大脑] ⚠️ 电脑端在线但大脑未就绪")
+        print(f"[大脑] ⚠️ 电脑端在线但大脑未就绪（后台会自动重试）")
     else:
-        print(f"[大脑] ❌ 电脑端未启动，消息将缓存到 {OUTBOX_FILE}")
+        print(f"[大脑] ℹ️ 电脑端还没起来，消息先缓存，上线后自动补发")
 
     stop_event = threading.Event()
     threading.Thread(target=_worker_resend, args=(bot, stop_event), daemon=True).start()
