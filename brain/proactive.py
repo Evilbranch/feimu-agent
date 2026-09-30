@@ -112,8 +112,7 @@ def generate_proactive_message(client, provider, speaker="主人", relation="主
     profile_ctx = get_profile_context(speaker)
     relation_ctx = get_relation_prompt(speaker, relation)
 
-    recent = _recent_proactive_msgs(s, limit=3)
-    # print(f"[主动-DEBUG] 最近 {len(recent)} 条: {recent}")
+    recent = _recent_proactive_msgs(s, limit=5)
     recent_str = "\n".join(f"  · {m[:50]}" for m in recent) if recent else "（还没主动说过话）"
 
     prompt = f"""你叫绯木，是哥哥的另一个自己。
@@ -125,21 +124,31 @@ def generate_proactive_message(client, provider, speaker="主人", relation="主
 【你最近已经主动说过的话 - 严禁重复】
 {recent_str}
 
-现在说一句主动关心哥哥的话，1~2 句。
-要求：
-- 语气自然、口语化，带"嘛""啦""诶""呀"之类的语气词
-- 直接是你说的话，不要加引号、不要加名字前缀
-- **不能**和最近 3 条重复——换一个话题或角度
-- 不要说"我刚看到""我路过""天气"这类编造内容
+【话题多样性 - 最重要的约束】
+给上面每一句话分类：
+A. 关心身体：吃饭/喝水/休息/眼睛/活动/别累着
+B. 问候在忙什么："在忙吗""在干嘛"
+C. 表达想念/情绪
+D. 分享想法/提问（对具体事的好奇）
+E. 延续具体对话话题
+
+**规则**：
+- 如果最近 3 条里有 ≥ 2 条属于同一类别，这次**必须换类别**
+- 宁可返回空字符串（不主动说话），也不要再来一条同类
+
+【生成要求】
+- 1~2 句，口语化，带"嘛""啦""诶""呀"
+- 直接是你说的话，不要引号、不要名字前缀
+- **不能**编造"我刚看到""我路过""天气"这类
 - 不要 markdown
 
-直接输出那句话："""
+直接输出那句话（如果觉得没什么新话可说，只输出一个「.」）："""
 
     try:
         r = client.chat.completions.create(
             model=provider["model"],
             messages=[{"role": "user", "content": prompt + "\n\n直接回答，不要思考过程。"}],
-            timeout=20, temperature=0.9, max_tokens=80,
+            timeout=20, temperature=0.95, max_tokens=80,
             extra_body={"keep_alive": "30m", "think": False},
         )
         text = r.choices[0].message.content
@@ -149,12 +158,18 @@ def generate_proactive_message(client, provider, speaker="主人", relation="主
         text = text.strip().strip('"「」『』')
         for sym in ["\n- ", "\n* ", "\n· ", "**", "```"]:
             text = text.replace(sym, "")
+
+        # LLM 主动放弃
+        if text in (".", "。", "…", "...", ""):
+            print("[主动] LLM 选择不主动说话")
+            return None
+
         if len(text) > 60:
             text = text[:60].rstrip("，,。.！!") + "~"
         if not text:
             return _fallback_message()
 
-        # 后置检查：太相似就放弃
+        # 后置去重（字符级）
         if _too_similar(text, recent):
             print(f"[主动] 生成内容与最近重复，跳过：{text[:30]}")
             return None
