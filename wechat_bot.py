@@ -116,6 +116,7 @@ def _send_to_user(bot, user_id, text):
 # ══════════════════════════════════════════════════════════════
 # Outbox（离线缓存）
 # ══════════════════════════════════════════════════════════════
+
 def _load_outbox():
     with _outbox_lock:
         if not os.path.exists(OUTBOX_FILE):
