@@ -183,18 +183,12 @@ def _handle_wechat_message(text):
     except Exception as e:
         print(f"[API-L2] 异常: {e}")
 
-    # L4：自我反思 → 塞 pending，微信端会拉到
+    # L4 自语：微信端不推（自语是内心话，不该发给用户）
+    # 但 L4 本身可以跑——它会影响情绪和 self_reflections.json 日志
     try:
         from brain.self_reflect import reflect_on_own_speech
-        reflect_text = reflect_on_own_speech(_client, _provider, rep, source="wechat")
-        if reflect_text:
-            with s.proactive_queue_lock:
-                s.wechat_pending.append({
-                    "ts": time.time(),
-                    "msg": reflect_text,
-                    "type": "self_reflect",
-                })
-            print(f"[API] L4 自语入队: {reflect_text[:40]}")
+        _ = reflect_on_own_speech(_client, _provider, rep, source="wechat")
+        # 注意：不塞 wechat_pending
     except Exception as e:
         print(f"[API-L4] 异常: {e}")
 

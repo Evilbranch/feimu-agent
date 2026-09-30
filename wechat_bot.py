@@ -164,7 +164,7 @@ def _requeue_outbox_front(item):
 # 后台线程
 # ══════════════════════════════════════════════════════════════
 def _worker_resend(bot, stop_event):
-    """每 30 秒检测电脑端；在线且 brain_ready 则逐条补发"""
+    """每 30 秒检测电脑端；在线且 brain_ready 则逐条补发（最多 5 条）"""
     while not stop_event.is_set():
         stop_event.wait(30)
         if stop_event.is_set():
@@ -176,6 +176,14 @@ def _worker_resend(bot, stop_event):
 
         idx = 0
         while True:
+            # 单次补发上限 5 条，剩下的清空（太旧的没必要补）
+            if idx >= 5:
+                remain = _load_outbox()
+                if remain:
+                    print(f"[补发] 已达 5 条上限，丢弃剩余 {len(remain)} 条旧消息")
+                    _save_outbox([])
+                break
+
             item = _pop_outbox_front()
             if not item:
                 break
@@ -195,10 +203,9 @@ def _worker_resend(bot, stop_event):
             if _send_to_user(bot, user_id, full):
                 print(f"[补发] {full[:60]}")
             else:
-                # 发送失败，塞回队列
                 _requeue_outbox_front(item)
                 break
-            time.sleep(1)
+            time.sleep(2.5)   # 从 1 秒改到 2.5 秒，避免刷屏
 
 
 def _worker_pending(bot, stop_event):
