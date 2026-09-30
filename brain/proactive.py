@@ -58,20 +58,27 @@ def _fallback_message():
     return random.choice(opts)
 
 
-def _recent_proactive_msgs(s, limit=3):
-    """取最近 N 条主动消息（避免重复）"""
+def _recent_proactive_msgs(s, limit=5):
+    """从 state 里读最近主动消息（proactive + inner_life 合并）"""
+    recent = list(getattr(s, "recent_proactive_msgs", []) or [])
+    # 再合并 inner_life 的最近 speak
     try:
         from brain.inner_life import _load_log
         log = _load_log()
-        recent = [e.get("content", "") for e in log[-30:]
-                  if e.get("intent") == "speak" and e.get("content")]
-        # 也加上 state 里 pending 的
-        with s.proactive_queue_lock:
-            for item in s.proactive_queue[-limit:]:
-                recent.append(item.get("msg", ""))
-        return recent[-limit:]
+        for e in log[-20:]:
+            if e.get("intent") == "speak" and e.get("content"):
+                recent.append(e["content"])
     except Exception:
-        return []
+        pass
+    return recent[-limit:]
+
+
+def _record_proactive_msg(s, msg):
+    """把这次主动消息记进 state"""
+    if not hasattr(s, "recent_proactive_msgs") or s.recent_proactive_msgs is None:
+        s.recent_proactive_msgs = []
+    s.recent_proactive_msgs.append(msg)
+    s.recent_proactive_msgs = s.recent_proactive_msgs[-10:]
 
 
 def _too_similar(text, recent_list, threshold=0.55):
@@ -173,6 +180,8 @@ def proactive_loop(client, provider):
 
         s.last_proactive_time = time.time()
         s.proactive_missed += 1
+
+        _record_proactive_msg(s, msg)
 
         with s.proactive_queue_lock:
             s.proactive_queue.append({"msg": msg, "emotion": "开心"})

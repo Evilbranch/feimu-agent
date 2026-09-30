@@ -42,7 +42,7 @@ class State:
         # 🆕 主动消息队列（后台线程 → 主循环）
         self.proactive_queue = []
         self.proactive_queue_lock = threading.Lock()
-
+        self.recent_proactive_msgs = []
 
 
 _state = None
