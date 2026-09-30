@@ -20,7 +20,7 @@ CHECK_INTERVAL = 300         # 首次唤醒延迟（仅用于初始化）
 IDLE_THRESHOLD = 600         # 10 分钟没互动才算"独处"
 MAX_SPEAK_PER_HOUR = 2       # 每小时最多主动 2 次
 MIN_SPEAK_GAP = 900          # 两次主动至少 15 分钟
-DUP_THRESHOLD = 0.6          # Jaccard 相似度 > 0.6 视为重复
+DUP_THRESHOLD = 0.75          # Jaccard 相似度 > 0.75 视为重复
 
 # 自唤醒边界
 MIN_WAKE = 60                # 最少 1 分钟
@@ -314,20 +314,33 @@ def _ask_intent(client, provider, ctx, retries=3):
 
 # ==================== 去重 ====================
 def _is_duplicate(new_content, log):
+    """判断是否和最近主动说过的话重复（去标点后按字符集 Jaccard）"""
     if not new_content:
         return True
+
+    def _norm(t):
+        # 去掉标点、空白、常见虚词——避免"哥哥""呀""嘛"这种高频字干扰
+        _strip = "，。！？!?,.~～；;：:、 \t\n\"'「」『』"
+        t = "".join(c for c in t if c not in _strip)
+        for w in ["哥哥", "啦", "呀", "嘛", "哦", "呢", "啦", "诶", "啊"]:
+            t = t.replace(w, "")
+        return t
+
     recent = [e.get("content", "") for e in log[-50:]
               if e.get("intent") == "speak" and e.get("content")]
     if not recent:
         return False
-    new_set = set(new_content)
-    if not new_set:
-        return True
+
+    new_set = set(_norm(new_content))
+    if len(new_set) < 3:
+        # 内容太短，判重没意义
+        return False
+
     for old in recent[-8:]:
         if not old:
             continue
-        old_set = set(old)
-        if not old_set:
+        old_set = set(_norm(old))
+        if len(old_set) < 3:
             continue
         jaccard = len(new_set & old_set) / len(new_set | old_set)
         if jaccard > DUP_THRESHOLD:
