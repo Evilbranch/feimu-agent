@@ -23,7 +23,7 @@ from brain.memory import (RAGMemory, load_history, save_history,
     set_slot, get_slot, SLOTS)
 from brain.mood import MoodManager
 from brain.llm import ask_ai, is_sensitive
-from brain.proactive import proactive_loop
+# from brain.proactive import proactive_loop
 
 from voice import vmc
 from voice.stt import init_whisper_bg, warmup, listen_wake, listen_record, speech_to_text
@@ -578,12 +578,8 @@ def main():
         loop.run_until_complete(life_loop())
     threading.Thread(target=run_life, daemon=True).start()
 
-    if s.proactive_enabled:
-        threading.Thread(
-            target=proactive_loop,
-            args=(client, provider),
-            daemon=True
-        ).start()
+    # 注：proactive_loop 已停用，主动消息统一由 inner_life 处理
+    # 保留 proactive.py 文件不删，以防 import 报错
 
     # 内在生活循环
     from brain.inner_life import inner_life_loop

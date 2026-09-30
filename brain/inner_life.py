@@ -85,6 +85,23 @@ def _format_wake_time(seconds):
         return f"{seconds // 60}分钟"
     return f"{seconds // 3600}小时{(seconds % 3600) // 60}分钟"
 
+def _time_theme():
+    """根据当前时间给一句提示，让 LLM 参考着决定要不要关心"""
+    h = time.localtime().tm_hour
+    if 5 <= h < 9:
+        return "早上刚起，如果合适可以问候早安，但别太热情"
+    if 9 <= h < 12:
+        return "上午，哥哥可能在忙"
+    if 12 <= h < 14:
+        return "午饭时间，如果没什么想说，可以自然提醒吃饭"
+    if 14 <= h < 18:
+        return "下午，哥哥可能在工作或休息"
+    if 18 <= h < 20:
+        return "晚饭时间，可以提一下吃饭"
+    if 20 <= h < 23:
+        return "晚上，可以聊聊今天过得怎么样"
+    return "深夜，哥哥可能困了，安静点或提醒早点休息"
+
 
 def _build_context(s, history):
     st = P.get_current_state()
@@ -152,6 +169,7 @@ def _build_context(s, history):
         pass
 
     return f"""【当前时间】{time.strftime('%Y年%m月%d日 %H:%M', time.localtime())}
+【时段提示】{_time_theme()}
 【距离上次互动】{elapsed_min} 分钟（{time_hint}）
 【距离上次主动说话】{last_speak_str}
 
@@ -196,8 +214,14 @@ INNER_SYSTEM = """你是绯木。现在是你独处的时间，没有人在跟�
 【speak 的内容来源】
 主动说话的内容**只能来自**：
 1. 最近真实对话里发生过的事
-2. 你的当前情绪（要具体，不要"想你了"这种空话）
+2. 你的当前情绪（要具体，不要空话）
 3. 单纯的打招呼
+4. **结合当前时段**——比如午饭时间可以提醒吃饭，深夜可以提醒早睡
+   （⚠️ 但不要说"天气""外面"这种你没有感官的东西）
+
+【时段是提示，不是命令】
+如果时段提示你不感兴趣，可以完全不管它，说你自己想说的。
+不要每次都必须提"吃饭""休息"——那太像客服。
 
 🚫 绝对禁止编造：
 - "我们一起做了什么"（除非对话里真有）
