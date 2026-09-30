@@ -13,7 +13,7 @@ echo   1. Text mode
 echo   2. Voice mode
 echo   3. Text mode + Minecraft
 echo   4. Voice mode + Minecraft
-echo   5. Start TTS API
+echo   5. Start TTS API (skip if running)
 echo   6. Start WeChat
 echo   7. Stop all
 echo   8. Full stack - Text (TTS + Text + WeChat)
@@ -36,11 +36,15 @@ if "%choice%"=="0" exit
 goto menu
 
 :text_mode
+call :_kill_main
+timeout /t 2 /nobreak >nul
 cd /d F:\Ollama
 start "Feimu-Text" cmd /k "chcp 65001 >nul && py my_ai.py --text"
 goto end
 
 :voice_mode
+call :_kill_main
+timeout /t 2 /nobreak >nul
 cd /d F:\Ollama
 start "Feimu-Voice" cmd /k "chcp 65001 >nul && py my_ai.py --voice"
 goto end
@@ -52,7 +56,9 @@ echo Open LAN world in Minecraft first
 echo.
 set /p PORT=Port: 
 if "%PORT%"=="" goto menu
-call :_clean_node
+call :_kill_mc_bot
+call :_kill_main
+timeout /t 2 /nobreak >nul
 cd /d F:\Ollama\minecraft
 start "MC-Bot" cmd /k "chcp 65001 >nul && set MC_PORT=%PORT%&& set MC_USERNAME=Feimu&& set MC_VERSION=1.21.1&& set MC_HOST=localhost&& node bot.js"
 echo Waiting 10s for bot to connect...
@@ -68,7 +74,9 @@ echo Open LAN world in Minecraft first
 echo.
 set /p PORT=Port: 
 if "%PORT%"=="" goto menu
-call :_clean_node
+call :_kill_mc_bot
+call :_kill_main
+timeout /t 2 /nobreak >nul
 cd /d F:\Ollama\minecraft
 start "MC-Bot" cmd /k "chcp 65001 >nul && set MC_PORT=%PORT%&& set MC_USERNAME=Feimu&& set MC_VERSION=1.21.1&& set MC_HOST=localhost&& node bot.js"
 echo Waiting 10s for bot to connect...
@@ -78,11 +86,12 @@ start "Feimu-Voice" cmd /k "chcp 65001 >nul && py my_ai.py --voice"
 goto end
 
 :start_api
-cd /d F:\GPT-SoVITS-v2-240821
-start "TTS API" cmd /k "chcp 65001 >nul && .\runtime\python.exe api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS\configs\tts_infer.yaml"
+call :_ensure_tts
 goto end
 
 :start_wechat
+call :_kill_wechat
+timeout /t 2 /nobreak >nul
 cd /d F:\Ollama
 start "Feimu-WeChat" cmd /k "chcp 65001 >nul && py wechat_bot.py"
 goto end
@@ -91,13 +100,12 @@ goto end
 cls
 echo === Full stack: TTS + Text + WeChat ===
 echo.
-echo [1/3] Starting TTS API...
-cd /d F:\GPT-SoVITS-v2-240821
-start "TTS API" cmd /k "chcp 65001 >nul && .\runtime\python.exe api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS\configs\tts_infer.yaml"
-echo     Waiting 8s for TTS to load...
-timeout /t 8 /nobreak >nul
+call :_ensure_tts
 
-echo [2/3] Starting Feimu (text mode)...
+echo [2/3] Restarting Feimu...
+call :_kill_main
+call :_kill_wechat
+timeout /t 2 /nobreak >nul
 cd /d F:\Ollama
 start "Feimu-Text" cmd /k "chcp 65001 >nul && py my_ai.py --text"
 echo     Waiting 5s...
@@ -109,9 +117,6 @@ start "Feimu-WeChat" cmd /k "chcp 65001 >nul && py wechat_bot.py"
 echo.
 echo ========================================
 echo   All launched!
-echo   - TTS API window
-echo   - Feimu-Text window
-echo   - Feimu-WeChat window
 echo ========================================
 echo.
 echo Closing in 3 seconds...
@@ -122,13 +127,12 @@ exit
 cls
 echo === Full stack: TTS + Voice + WeChat ===
 echo.
-echo [1/3] Starting TTS API...
-cd /d F:\GPT-SoVITS-v2-240821
-start "TTS API" cmd /k "chcp 65001 >nul && .\runtime\python.exe api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS\configs\tts_infer.yaml"
-echo     Waiting 8s for TTS to load...
-timeout /t 8 /nobreak >nul
+call :_ensure_tts
 
-echo [2/3] Starting Feimu (voice mode)...
+echo [2/3] Restarting Feimu...
+call :_kill_main
+call :_kill_wechat
+timeout /t 2 /nobreak >nul
 cd /d F:\Ollama
 start "Feimu-Voice" cmd /k "chcp 65001 >nul && py my_ai.py --voice"
 echo     Waiting 5s...
@@ -140,25 +144,54 @@ start "Feimu-WeChat" cmd /k "chcp 65001 >nul && py wechat_bot.py"
 echo.
 echo ========================================
 echo   All launched!
-echo   - TTS API window
-echo   - Feimu-Voice window
-echo   - Feimu-WeChat window
 echo ========================================
 echo.
 echo Closing in 3 seconds...
 timeout /t 3 /nobreak >nul
 exit
 
+:_ensure_tts
+echo [1/3] Checking TTS API...
+curl -s -o nul -w "%%{http_code}" --max-time 2 http://127.0.0.1:9880/docs > "%TEMP%\_feimu_tts.txt" 2>nul
+set /p TTS_CODE=<"%TEMP%\_feimu_tts.txt"
+del "%TEMP%\_feimu_tts.txt" >nul 2>&1
+
+if "%TTS_CODE%"=="200" (
+    echo     TTS already running - skip.
+    exit /b
+)
+
+echo     TTS not running - starting...
+cd /d F:\GPT-SoVITS-v2-240821
+start "TTS API" cmd /k "chcp 65001 >nul && .\runtime\python.exe api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS\configs\tts_infer.yaml"
+echo     Waiting 8s for TTS to load...
+timeout /t 8 /nobreak >nul
+exit /b
+
 :stop_all
-call :_clean_node
+call :_kill_mc_bot
+call :_kill_main
+call :_kill_wechat
 taskkill /F /IM python.exe >nul 2>&1
+taskkill /F /IM node.exe >nul 2>&1
 echo.
 echo All stopped
 timeout /t 2 /nobreak >nul
 goto menu
 
-:_clean_node
-taskkill /F /IM node.exe >nul 2>&1
+:_kill_main
+echo   [kill] Feimu main process...
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*my_ai.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+exit /b
+
+:_kill_wechat
+echo   [kill] WeChat process...
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*wechat_bot.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+exit /b
+
+:_kill_mc_bot
+echo   [kill] MC bot process...
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*bot.js*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 exit /b
 
 :end
