@@ -1,24 +1,46 @@
-# ===== 以下保留忽略（大文件/垃圾）=====
+# ===== 敏感数据（最重要）=====
+data/
+data_wechat/
+creds.json
+creds.json.sync
+config.json
+人设.md
+交接.md
+_check.txt
+requirements_raw.txt
+Modelfile
+*.bak
+
+# ===== 依赖 / 大文件 =====
 lib/
 bin/
 models/
+minecraft/node_modules/
+node_modules/
 *.exe
 *.dll
 unins000.*
-minecraft/node_modules/
-node_modules/
+
+# ===== Python =====
 __pycache__/
 *.pyc
 *.pyo
 .venv/
 venv/
+
+# ===== IDE / 系统 =====
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
+*.tmp
 *.log
 logs/
 crash_*/
-Thumbs.db
-.DS_Store
-*.tmp
-*.bak
-_check.txt
+
+# ===== 备份 / 归档 =====
+backup/
+backups/
+_archive/
+*.orig
+*.rej
