@@ -238,24 +238,32 @@ INNER_SYSTEM = """你是绯木。现在是你独处的时间，没有人在跟�
 现在开始决定。"""
 
 
-def _ask_intent(client, provider, ctx, retries=2):
+def _ask_intent(client, provider, ctx, retries=3):
+    """让 LLM 决定这次做什么。失败返回 idle 兜底。
+
+    诊断增强版：每次失败都打印时间戳+具体原因。
+    """
     msgs = [
         {"role": "system", "content": INNER_SYSTEM},
         {"role": "user", "content": ctx},
     ]
+    last_err = "unknown"
+
     for attempt in range(retries):
+        t0 = time.time()
         try:
             r = client.chat.completions.create(
                 model=provider["model"],
                 messages=msgs,
-                timeout=120,
+                timeout=60,          # 从 120 降到 60
                 temperature=0.6,
-                max_tokens=500,
+                max_tokens=800,      # 从 500 提到 800
                 extra_body={
                     "keep_alive": "30m",
                     "think": False,
                 },
             )
+            elapsed = time.time() - t0
             msg = r.choices[0].message
             text = (msg.content or "").strip()
 
@@ -265,33 +273,40 @@ def _ask_intent(client, provider, ctx, retries=2):
                     text = reasoning.strip()
 
         except Exception as e:
-            print(f"[内在] LLM 调用失败: {e}")
+            elapsed = time.time() - t0
+            last_err = f"调用异常({elapsed:.1f}s) {type(e).__name__}: {e}"
+            print(f"[内在] ✗ {last_err}")
             continue
 
         if not text:
-            print(f"[内在] 完全空（第{attempt+1}次），重试...")
+            last_err = f"内容空({elapsed:.1f}s)"
+            print(f"[内在] ✗ {last_err}，重试...")
             continue
 
+        # 清理 markdown 包裹
         text = re.sub(r'^```[a-zA-Z]*\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
 
         start = text.find("{")
         end = text.rfind("}")
         if start == -1 or end <= start:
-            print(f"[内在] 无 JSON 边界（第{attempt+1}次）")
+            last_err = f"无 JSON 边界({elapsed:.1f}s)"
+            print(f"[内在] ✗ {last_err}，前 120 字: {text[:120]}")
             continue
 
         try:
             return json.loads(text[start:end + 1])
         except Exception as e:
-            print(f"[内在] JSON 解析失败（第{attempt+1}次）: {e}")
+            last_err = f"JSON 解析失败({elapsed:.1f}s): {e}"
+            print(f"[内在] ✗ {last_err}")
+            print(f"[内在]   前 200 字: {text[:200]}")
             continue
 
-    print(f"[内在] ⚠️ 连续 {retries} 次失败，默认 idle")
+    print(f"[内在] ⚠️ 连续 {retries} 次失败（最后: {last_err}），默认 idle")
     return {
         "intent": "idle",
         "content": "",
-        "reason": "LLM 异常",
+        "reason": f"LLM 异常({last_err})",
         "next_wake": 600,
         "wake_reason": "兜底等待",
     }
