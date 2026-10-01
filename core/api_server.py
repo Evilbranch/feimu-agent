@@ -1,14 +1,12 @@
 """电脑端 HTTP 服务 - 给微信端做大脑
 
 接口：
-- POST /chat          : 微信端发来的消息，走完整对话流程，返回回复
-- GET  /pending       : 微信端拉主动消息（她主动想说的）
+- POST /chat          : 微信端发来的消息
+- GET  /pending       : 微信端拉主动消息
 - GET  /health        : 探活 + brain_ready
-- GET  /self/status   : 她的当前状态（intent + 情绪 + 驱力）
-- GET  /self/recent   : 她最近的内在活动（?limit=N，默认 10）
-- GET  /self/diary    : 她今天的日记（?date=YYYY-MM-DD，默认今天）
-
-只绑 127.0.0.1，不对外暴露。
+- GET  /self/status   : 她的当前状态
+- GET  /self/recent   : 她最近的内在活动（?limit=N）
+- GET  /self/diary    : 她今天的日记（?date=YYYY-MM-DD）
 """
 import os
 import re
@@ -22,7 +20,6 @@ from core.constants import DATA_DIR
 
 HOST = "127.0.0.1"
 PORT = 8765
-
 PENDING_TTL = 600
 
 _client = None
@@ -323,12 +320,40 @@ def _handle_wechat_message(text):
         use_tools=True,
         speaker="主人",
         relation="主人",
-        source="owner",   # 微信端走主人人格
+        source="owner",
     )
 
     if not rep:
         rep = "……"
 
+    # ══════════════════════════════════════════════════════
+    # 反问硬拦截（覆盖微信路径，包括工具路径的输出）
+    # 关键：修正后要写回 history，否则下一轮 count 会重复计算
+    # ══════════════════════════════════════════════════════
+    try:
+        from brain.anti_reflex import apply_anti_reflex
+        _ar_fixed, _ar_hit = apply_anti_reflex(rep, _history_ref, threshold=2, max_check=4)
+        if _ar_hit:
+            print(f"[反问拦截] 微信路径: {rep[:40]} → {_ar_fixed[:40]}")
+            rep = _ar_fixed
+            # 写回 history 的最后一条 assistant
+            _updated = False
+            for i in range(len(_history_ref) - 1, -1, -1):
+                if _history_ref[i].get("role") == "assistant":
+                    _history_ref[i]["content"] = _ar_fixed
+                    _updated = True
+                    break
+            if _updated:
+                try:
+                    from brain.memory import save_history
+                    save_history(_history_ref)
+                    print(f"[反问拦截] 已写回 history")
+                except Exception as e:
+                    print(f"[反问拦截] 写回失败: {e}")
+    except Exception as e:
+        print(f"[反问拦截] 异常: {e}")
+
+    # KOKKI 输出审计
     try:
         from brain.output_audit import audit_output, pick_safe_reply
         _suspicious, _reasons = audit_output(rep)
@@ -340,6 +365,7 @@ def _handle_wechat_message(text):
 
     print(f"[API→微信] {rep}")
 
+    # L2：她自己的话影响情绪
     try:
         from brain.self_mood import apply_own_speech_impact
         _self_last = ""
@@ -352,6 +378,7 @@ def _handle_wechat_message(text):
     except Exception as e:
         print(f"[API-L2] 异常: {e}")
 
+    # L4 自语（微信端不推，但影响情绪）
     try:
         from brain.self_reflect import reflect_on_own_speech
         _ = reflect_on_own_speech(_client, _provider, rep, source="wechat")

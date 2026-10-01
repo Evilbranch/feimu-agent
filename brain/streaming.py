@@ -1,14 +1,9 @@
 """流式对话 - LLM 边生成，句子塞进队列（qwen2.5 专用版）
 
 方案 A：半流式守卫
-- 冷淡模式（v < -0.4）下走流式，但第一句送 TTS 前先检查
-- 第一句不讨好 → 正常流式，首句 1~2s
-- 第一句讨好 → 中断流，改走非流式 _ask_ai_inner（含守卫 + 重生成 + 兜底）
-
 方案 1：末尾残留补日志
 方案 2：冷淡模式空输出兜底
-
-L2 情景记忆：检索结构化情景记忆注入 prompt
+反问硬拦截：history 存储前修正（已播出的不改）
 """
 import time
 import re
@@ -191,7 +186,6 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
         "\n如果历史里没有真实内容支撑，宁可说'记不清了'，也不要编。"
     )
 
-    # 方案二：Narrative-Experts 记忆锚点
     try:
         _known = set()
         for _m in history[-10:]:
@@ -211,9 +205,7 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
     except Exception:
         pass
 
-    # ══════════════════════════════════════════════════════
     # L2 情景记忆检索
-    # ══════════════════════════════════════════════════════
     try:
         from brain.episodic import retrieve_episodes, format_episodes_for_prompt
         episodes = retrieve_episodes(query=ui, top_k=3)
@@ -223,7 +215,6 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
     except Exception as e:
         print(f"[episodic] 异常: {e}")
 
-    # 方案四：Physics Scratchpad
     _label_now = "平静"
     try:
         from brain.persona import get_current_state
@@ -239,7 +230,6 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
         f"\n现在，基于以上前提，说出你的回复。"
     )
 
-    # L1：让她"看到"自己上一句
     last_self = ""
     for _m in reversed(history):
         if _m.get("role") == "assistant" and _m.get("content"):
@@ -396,13 +386,26 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
     except Exception as e:
         print(f"[审计] 异常: {e}")
 
+    # ══════════════════════════════════════════════════════
+    # 反问硬拦截：只修正 history 里存储的版本（已播出的不改）
+    # ══════════════════════════════════════════════════════
+    _history_ac = ac
+    try:
+        from brain.anti_reflex import apply_anti_reflex
+        _ar_fixed, _ar_hit = apply_anti_reflex(ac, history, threshold=2, max_check=4)
+        if _ar_hit:
+            print(f"[反问拦截] history修正: {ac[:40]} → {_ar_fixed[:40]}")
+            _history_ac = _ar_fixed
+    except Exception as e:
+        print(f"[反问拦截] 异常: {e}")
+
     history.append({"role": "user", "content": ui})
-    history.append({"role": "assistant", "content": ac})
+    history.append({"role": "assistant", "content": _history_ac})
     save_history(history)
     if s.rag and source not in ("friend", "audience"):
-        s.rag.add(ui, ac)
+        s.rag.add(ui, _history_ac)
 
     try:
-        extract_async(client, provider, ui, ac, speaker)
+        extract_async(client, provider, ui, _history_ac, speaker)
     except Exception:
         pass

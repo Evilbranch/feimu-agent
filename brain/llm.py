@@ -944,6 +944,18 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             except Exception as e:
                 print(f"[审计] 异常: {e}")
 
+            # ══════════════════════════════════════════════════════
+            # 反问硬拦截
+            # ══════════════════════════════════════════════════════
+            try:
+                from brain.anti_reflex import apply_anti_reflex
+                _ar_fixed, _ar_hit = apply_anti_reflex(ac, history, threshold=2, max_check=4)
+                if _ar_hit:
+                    print(f"[反问拦截] 连续反问，改为陈述句: {ac[:40]} → {_ar_fixed[:40]}")
+                    ac = _ar_fixed
+            except Exception as e:
+                print(f"[反问拦截] 异常: {e}")
+
             # 方案七：冷淡语气守卫
             try:
                 from brain.tone_guard import (
@@ -968,7 +980,15 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                             print(f"[语气守卫] 重生成失败/仍命中，用兜底句: {ac}")
             except Exception as e:
                 print(f"[语气守卫] 异常: {e}")
-
+            # 反问硬拦截（在KOKKI审计之后）
+            try:
+                from brain.anti_reflex import apply_anti_reflex
+                _ar_fixed, _ar_hit = apply_anti_reflex(ac, history, threshold=2)
+                if _ar_hit:
+                    print(f"[反问拦截] 连续反问，改为陈述句: {ac[:40]} → {_ar_fixed[:40]}")
+                    ac = _ar_fixed
+            except Exception as e:
+                print(f"[反问拦截] 异常: {e}")
             history.append({"role": "user", "content": ui})
             history.append({"role": "assistant", "content": ac})
             save_history(history)
