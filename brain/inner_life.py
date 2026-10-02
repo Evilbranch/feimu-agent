@@ -356,6 +356,7 @@ def _is_duplicate(new_content, log):
     if not new_content:
         return True
 
+
     def _norm(t):
         # 去掉标点、空白、常见虚词——避免"哥哥""呀""嘛"这种高频字干扰
         _strip = "，。！？!?,.~～；;：:、 \t\n\"'「」『』"
@@ -363,6 +364,30 @@ def _is_duplicate(new_content, log):
         for w in ["哥哥", "啦", "呀", "嘛", "哦", "呢", "诶", "啊"]:
             t = t.replace(w, "")
         return t
+
+
+    # ══════════════════════════════════════════════════════
+    # 问候类直接判重（不受 jaccard 影响）
+    # "早安哦，希望你今天心情愉快" vs "早安哦，希望你昨晚睡得不错" jaccard 低但语义重复
+    # ══════════════════════════════════════════════════════
+    _GREETING_HEADS = [
+        "早安", "早上好", "早哦", "早啦", "早呀",
+        "晚安", "晚上好", "夜里好",
+        "午安", "中午好", "午饭时间",
+        "下午好", "傍晚好",
+    ]
+    new_s = new_content.strip()
+    is_new_greeting = any(new_s.startswith(h) for h in _GREETING_HEADS)
+    if is_new_greeting:
+        recent_greetings = [
+            e.get("content", "").strip()
+            for e in log[-50:]
+            if e.get("intent") == "speak" and e.get("content")
+        ]
+        for old in recent_greetings[-8:]:
+            if any(old.startswith(h) for h in _GREETING_HEADS):
+                print(f"[判重] 问候重复: 新={new_s[:20]} 旧={old[:20]}")
+                return True
 
     recent = [e.get("content", "") for e in log[-50:]
               if e.get("intent") == "speak" and e.get("content")]
@@ -381,8 +406,8 @@ def _is_duplicate(new_content, log):
         if len(old_set) < 3:
             continue
         jaccard = len(new_set & old_set) / len(new_set | old_set)
-        print(f"[判重-DEBUG] 新={new_content[:20]} 旧={old[:20]} jaccard={jaccard:.2f} 阈值={DUP_THRESHOLD}")
         if jaccard > DUP_THRESHOLD:
+            print(f"[判重] 命中: 新={new_content[:20]} vs 旧={old[:20]} jaccard={jaccard:.2f}")
             return True
     return False
 

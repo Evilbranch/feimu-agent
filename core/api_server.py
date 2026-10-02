@@ -327,29 +327,15 @@ def _handle_wechat_message(text):
         rep = "……"
 
     # ══════════════════════════════════════════════════════
-    # 反问硬拦截（覆盖微信路径，包括工具路径的输出）
-    # 关键：修正后要写回 history，否则下一轮 count 会重复计算
-    # ══════════════════════════════════════════════════════
+    # 反问拦截：检测到反问 → LLM 重生成陈述句
     try:
         from brain.anti_reflex import apply_anti_reflex
-        _ar_fixed, _ar_hit = apply_anti_reflex(rep, _history_ref, threshold=2, max_check=4)
+        _ar_fixed, _ar_hit = apply_anti_reflex(
+            rep, _history_ref, client=_client, provider=_provider
+        )
         if _ar_hit:
             print(f"[反问拦截] 微信路径: {rep[:40]} → {_ar_fixed[:40]}")
             rep = _ar_fixed
-            # 写回 history 的最后一条 assistant
-            _updated = False
-            for i in range(len(_history_ref) - 1, -1, -1):
-                if _history_ref[i].get("role") == "assistant":
-                    _history_ref[i]["content"] = _ar_fixed
-                    _updated = True
-                    break
-            if _updated:
-                try:
-                    from brain.memory import save_history
-                    save_history(_history_ref)
-                    print(f"[反问拦截] 已写回 history")
-                except Exception as e:
-                    print(f"[反问拦截] 写回失败: {e}")
     except Exception as e:
         print(f"[反问拦截] 异常: {e}")
 
@@ -364,6 +350,17 @@ def _handle_wechat_message(text):
         print(f"[审计] 异常: {e}")
 
     print(f"[API→微信] {rep}")
+
+    print(f"[API→微信] {rep}")
+
+    # 完整对话历史
+    try:
+        from brain.full_history import append as _fh_append
+        _fh_append(text, rep, source="wechat")
+    except Exception as e:
+        print(f"[full_history] 异常: {e}")
+
+    # L2：她自己的话影响情绪
 
     # L2：她自己的话影响情绪
     try:

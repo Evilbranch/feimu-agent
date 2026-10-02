@@ -12,10 +12,20 @@ from brain import inner_life as IL
 
 META_LOG_FILE = os.path.join(DATA_DIR, "meta_observations.json")
 META_HINT_FILE = os.path.join(DATA_DIR, "meta_hint.json")
+META_LAST_ADJ_FILE = os.path.join(DATA_DIR, "meta_last_adjustment.json")
 _lock = threading.Lock()
 
-META_INTERVAL = 1800       # 每 30 分钟观测一次
-MIN_LOG_COUNT = 5          # 至少 5 条日志才分析
+META_INTERVAL = 1800        # 每 30 分钟观测一次
+MIN_LOG_COUNT = 5           # 至少 5 条日志才分析
+REVERSE_COOLDOWN = 3600     # 1 小时内不允许反转方向
+
+# 相反方向映射（用于防横跳）
+_OPPOSITES = {
+    "speak_more": "speak_less",
+    "speak_less": "speak_more",
+    "slow_down": "speed_up",
+    "speed_up": "slow_down",
+}
 
 
 def _load_meta_log():
@@ -65,7 +75,61 @@ def load_hint():
         return None
 
 
-# ==================== 特征提取 ====================
+# ══════════════════════════════════════════════════════════
+# 防横跳
+# ══════════════════════════════════════════════════════════
+def _load_last_adj():
+    if not os.path.exists(META_LAST_ADJ_FILE):
+        return {}
+    try:
+        with open(META_LAST_ADJ_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+
+def _save_last_adj(adj, ts):
+    try:
+        with open(META_LAST_ADJ_FILE, "w", encoding="utf-8") as f:
+            json.dump({"adjustment": adj, "ts": ts}, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+
+def _resolve_adjustment(new_adj):
+    """防横跳：
+    - 同向 → 保持，刷新时间戳
+    - 反向且 1 小时内 → 拦成 none
+    - 反向且超过 1 小时 → 允许切换
+    """
+    if new_adj == "none":
+        return "none"
+
+    last = _load_last_adj()
+    last_adj = last.get("adjustment", "none")
+    last_ts = last.get("ts", 0)
+    now = time.time()
+
+    # 同向：保持
+    if new_adj == last_adj:
+        _save_last_adj(new_adj, now)
+        return new_adj
+
+    # 反向：检查冷却
+    is_reverse = _OPPOSITES.get(new_adj) == last_adj
+    if is_reverse and (now - last_ts < REVERSE_COOLDOWN):
+        remain = int((REVERSE_COOLDOWN - (now - last_ts)) / 60)
+        print(f"[元认知-防横跳] {last_adj} → {new_adj} 被拦截（{remain} 分钟后才允许反转）")
+        return "none"
+
+    # 允许切换（反向但超时，或无关方向）
+    _save_last_adj(new_adj, now)
+    return new_adj
+
+
+# ══════════════════════════════════════════════════════════
+# 特征提取
+# ══════════════════════════════════════════════════════════
 def _extract_features():
     log = IL._load_log()
     if len(log) < MIN_LOG_COUNT:
@@ -78,7 +142,6 @@ def _extract_features():
     speak_count = sum(1 for e in recent if e.get("intent") == "speak")
     explore_count = sum(1 for e in recent if e.get("intent") == "explore")
 
-    # 主动说话的时间间隔
     speak_times = [e["ts"] for e in recent if e.get("intent") == "speak"]
     intervals = []
     for i in range(1, len(speak_times)):
@@ -86,18 +149,15 @@ def _extract_features():
 
     avg_interval = sum(intervals) / len(intervals) if intervals else 0
 
-    # 最近的 speak 内容
     speak_contents = [e.get("content", "") for e in recent
                       if e.get("intent") == "speak" and e.get("content")]
 
-    # 距离上次主动多久
     last_speak_min = None
     for e in reversed(log):
         if e.get("intent") == "speak":
             last_speak_min = int((now - e["ts"]) / 60)
             break
 
-    # 距离上次互动多久
     s = state.get_state()
     idle_min = int((now - getattr(s, "last_interaction_time", 0)) / 60)
 
@@ -113,7 +173,9 @@ def _extract_features():
     }
 
 
-# ==================== LLM 分析 ====================
+# ══════════════════════════════════════════════════════════
+# LLM 分析
+# ══════════════════════════════════════════════════════════
 META_SYSTEM = """你是绯木。现在你要**回顾自己最近的状态**，看看有没有需要调整的地方。
 
 ⚠️ 直接输出 JSON，不要思考、不要解释、不要前后缀。必须从 { 开始，到 } 结束。
@@ -229,7 +291,9 @@ def _ask_meta(client, provider, features):
     return None
 
 
-# ==================== 主循环 ====================
+# ══════════════════════════════════════════════════════════
+# 主循环
+# ══════════════════════════════════════════════════════════
 def _do_observation(client, provider):
     features = _extract_features()
     if not features:
@@ -244,6 +308,9 @@ def _do_observation(client, provider):
     hint = (result.get("hint") or "").strip()
     force_speak = bool(result.get("force_next_speak", False))
     adjustment = (result.get("adjustment") or "none").strip()
+
+    # 防横跳
+    adjustment = _resolve_adjustment(adjustment)
 
     print(f"[元认知] {assessment}")
     if hint:

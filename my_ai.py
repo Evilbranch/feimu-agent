@@ -1096,6 +1096,22 @@ def main():
 
             _producer_thread.join(timeout=5)
 
+            _producer_thread.join(timeout=5)
+
+            # 完整对话历史
+            try:
+                from brain.full_history import append as _fh_append
+                _rep = ""
+                for _m in reversed(history):
+                    if _m.get("role") == "assistant" and _m.get("content"):
+                        _rep = _m["content"].strip()
+                        break
+                _fh_append(ui, _rep, source=current_source)
+            except Exception as e:
+                print(f"[full_history] 异常: {e}")
+
+            # MC 打字
+
             # MC 打字
             if from_mc:
                 try:

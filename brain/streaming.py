@@ -389,23 +389,23 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
     # ══════════════════════════════════════════════════════
     # 反问硬拦截：只修正 history 里存储的版本（已播出的不改）
     # ══════════════════════════════════════════════════════
-    _history_ac = ac
+    # 反问硬拦截：只改发给用户的版本（history 保留原始）
     try:
         from brain.anti_reflex import apply_anti_reflex
-        _ar_fixed, _ar_hit = apply_anti_reflex(ac, history, threshold=2, max_check=4)
+        _ar_fixed, _ar_hit = apply_anti_reflex(ac, history, threshold=1, max_check=4)
         if _ar_hit:
-            print(f"[反问拦截] history修正: {ac[:40]} → {_ar_fixed[:40]}")
-            _history_ac = _ar_fixed
+            print(f"[反问拦截] 改为陈述句: {ac[:40]} → {_ar_fixed[:40]}")
+            ac = _ar_fixed
     except Exception as e:
         print(f"[反问拦截] 异常: {e}")
 
     history.append({"role": "user", "content": ui})
-    history.append({"role": "assistant", "content": _history_ac})
+    history.append({"role": "assistant", "content": ac})
     save_history(history)
     if s.rag and source not in ("friend", "audience"):
-        s.rag.add(ui, _history_ac)
+        s.rag.add(ui, ac)
 
     try:
-        extract_async(client, provider, ui, _history_ac, speaker)
+        extract_async(client, provider, ui, ac, speaker)
     except Exception:
         pass
