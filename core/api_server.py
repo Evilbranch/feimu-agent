@@ -7,6 +7,9 @@
 - GET  /self/status   : 她的当前状态
 - GET  /self/recent   : 她最近的内在活动（?limit=N）
 - GET  /self/diary    : 她今天的日记（?date=YYYY-MM-DD）
+
+新增：
+- 每次请求标记 last_wechat_ping_time（用于判断微信端是否在线）
 """
 import os
 import re
@@ -77,6 +80,13 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        # 标记微信端活跃（任何请求都算）
+        try:
+            _s = state.get_state()
+            _s.last_wechat_ping_time = time.time()
+        except Exception:
+            pass
+
         full = self.path
         if "?" in full:
             path, query = full.split("?", 1)
@@ -115,6 +125,13 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
+        # 标记微信端活跃
+        try:
+            _s = state.get_state()
+            _s.last_wechat_ping_time = time.time()
+        except Exception:
+            pass
+
         path = self.path.split("?")[0]
 
         if path != "/chat":
@@ -327,7 +344,8 @@ def _handle_wechat_message(text):
         rep = "……"
 
     # ══════════════════════════════════════════════════════
-    # 反问拦截：检测到反问 → LLM 重生成陈述句
+    # 反问硬拦截：只改发给用户的版本，history 保留原始
+    # ══════════════════════════════════════════════════════
     try:
         from brain.anti_reflex import apply_anti_reflex
         _ar_fixed, _ar_hit = apply_anti_reflex(
@@ -351,16 +369,12 @@ def _handle_wechat_message(text):
 
     print(f"[API→微信] {rep}")
 
-    print(f"[API→微信] {rep}")
-
     # 完整对话历史
     try:
         from brain.full_history import append as _fh_append
         _fh_append(text, rep, source="wechat")
     except Exception as e:
         print(f"[full_history] 异常: {e}")
-
-    # L2：她自己的话影响情绪
 
     # L2：她自己的话影响情绪
     try:

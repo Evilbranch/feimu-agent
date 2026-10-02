@@ -816,9 +816,26 @@ def main():
                     print(f"\n绯木（主动）：{pro_msg}")
                     history.append({"role": "assistant", "content": pro_msg})
                     save_history(history, slot=current_slot)
-                    if tray: tray.set_status("active")
-                    asyncio.run(speak(pro_msg, pro_emotion))
-                    if tray: tray.set_status("sleep")
+
+                    # ══════════════════════════════════════════
+                    # 判断微信端是否在线
+                    # 90 秒内收到过微信端请求 → 在线 → 电脑端静默
+                    # ══════════════════════════════════════════
+                    _now = time.time()
+                    _last_ping = getattr(s, "last_wechat_ping_time", 0)
+                    _wechat_online = (_now - _last_ping) < 90
+
+                    if _wechat_online:
+                        print("[主动] 微信端在线，电脑端静默（已推微信）")
+                    else:
+                        print("[主动] 微信端离线，电脑端出声")
+                        if tray: tray.set_status("active")
+                        try:
+                            asyncio.run(speak(pro_msg, pro_emotion))
+                        except Exception as _e:
+                            print(f"[主动] TTS 失败: {_e}")
+                        if tray: tray.set_status("sleep")
+
                     conv_until = time.time() + CONVERSATION_KEEPALIVE
                     print("[主动] 进入对话模式，直接说话即可\n")
                     continue

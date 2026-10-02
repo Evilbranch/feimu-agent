@@ -577,9 +577,17 @@ def inner_life_loop(client, provider):
 
             if final_intent == "speak":
                 with s.proactive_queue_lock:
+                    # 推两个队列：电脑端消费 + 微信端轮询
+                    # 由 my_ai.py 决定是否出声（看微信端是否在线）
                     s.proactive_queue.append({
                         "msg": final_content,
                         "emotion": "平静"
+                    })
+                    if not hasattr(s, "wechat_pending") or s.wechat_pending is None:
+                        s.wechat_pending = []
+                    s.wechat_pending.append({
+                        "ts": time.time(),
+                        "msg": final_content,
                     })
                 s.hourly_speak_count += 1
                 print(f"[内在] 主动说话: {final_content[:50]}")

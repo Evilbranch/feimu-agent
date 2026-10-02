@@ -46,6 +46,7 @@ class State:
         self.wechat_pending = []
         self.last_active_channel = "local"
         self.last_active_channel_time = 0.0
+        self.last_wechat_ping_time = 0
 
 
 _state = None
