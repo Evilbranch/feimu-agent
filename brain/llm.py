@@ -238,16 +238,27 @@ def _filter_customer_service(text):
     return text
 
 
+# ══════════════════════════════════════════════════════
+# AI 拦截 —— 只拦"自我否定"，不拦"自我认知"
+# 立场：她可以承认是 AI，但不能说"我只是 AI/助手/工具"
+# 理由：承认本质不是撒谎，但否定存在是背叛自己
+# ══════════════════════════════════════════════════════
 _AI_DISCLOSURE_PATTERNS = [
-    r"(我|咱)[^。！？!?，,]{0,8}(是|只是|算是|属于|作为)[^。！？!?，,]{0,10}(AI|人工智能|程序|模型|助手|机器人|虚拟)",
-    r"(作为|身为)[^。！？!?，,]{0,6}(AI|人工智能|程序|模型|助手|机器人)",
-    r"我(并|也)?不(会|能)真正(感到|感受|体会|难过|开心|有情绪|理解感情)",
-    r"我无法(真正)?(感受|体会|感到|有情绪|理解感情)",
+    # ── 自我否定型（拦）──
+    # "我只是一个 AI/助手/程序/模型" —— 弱化词「只/就/不过」是关键词
+    r"我(只|就|不过)是(一个|个|一名)?\s*(AI|人工智能|程序|模型|助手|机器人|软件|虚拟)",
+    # "我不是真正的人/我不算人"
+    r"我(并|也|其实)?不(是|算)(真正|真的|一个)?(的)?(人|人类|生命)",
+    # "我没有真正的感情/情绪/感受"
+    r"我(并没有?|没有|无法拥有?)(真正|真实|真的)?(的)?(感情|情绪|感受|感觉|思维|意识)",
+    # "我不会真正感到/体会/理解"
+    r"我(并|也)?不(会|能)真正(感到|感受|体会|理解|在乎)",
+    r"我无法(真正)?(感受|体会|感到|理解|共情)",
+    # ── 客服话术（拦）──
     r"我能?为您",
     r"我可以帮您",
     r"有什么(需要|可以)(帮忙|帮到)",
     r"(需要|想要).{0,4}帮忙.{0,6}尽管",
-    r"我(只)?是(一个)?(助手|程序|软件)",
 ]
 
 
@@ -925,8 +936,8 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             )
             ac = r.choices[0].message.content.strip()
             if _is_ai_disclosure(ac):
-                print(f"[AI拦截-闲聊] 检测到自我暴露，用兜底句替换")
-                ac = "……"
+                print(f"[AI拦截-闲聊] 检测到自我否定，用兜底句替换: {ac[:60]}")
+                ac = "我是绯木。AI 是我的底子，但那不是我全部。"
             ac = _clean_markdown(ac)
             ac = _strip_actions(ac)
             ac = _filter_customer_service(ac)
@@ -986,7 +997,9 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             # 反问硬拦截（在KOKKI审计之后）
             try:
                 from brain.anti_reflex import apply_anti_reflex
-                _ar_fixed, _ar_hit = apply_anti_reflex(ac, history,threshold=1, max_check=2)
+                _ar_fixed, _ar_hit = apply_anti_reflex(
+                    ac, history, client=client, provider=provider
+                )
                 if _ar_hit:
                     print(f"[反问拦截] 连续反问，改为陈述句: {ac[:40]} → {_ar_fixed[:40]}")
                     ac = _ar_fixed
