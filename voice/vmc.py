@@ -70,6 +70,7 @@ class _VTSClient:
         self.req_counter = 0
         self._lock = threading.Lock()
         self._token_hint_shown = False
+        self._last_close_code = None    # ← 加这行
 
     def _load_token(self):
         try:
@@ -157,8 +158,9 @@ class _VTSClient:
 
     def _on_close(self, ws, code, msg):
         if self.connected:
-            print(f"[VTS] 连接断开")
+            print(f"[VTS] 连接断开 (code={code})")
         self.connected = False
+        self._last_close_code = code
 
     def _req_token(self):
         self._send("AuthenticationTokenRequest", {
@@ -187,7 +189,9 @@ class _VTSClient:
             on_close=self._on_close,
         )
         try:
-            self.ws.run_forever(ping_interval=20, ping_timeout=10)
+            # ping_interval 加长，ping_timeout 加长
+            # VTS 对 ping 响应慢，原来的 20/10 太激进
+            self.ws.run_forever(ping_interval=45, ping_timeout=25)
         except Exception as e:
             print(f"[VTS] run_forever 异常: {e}")
         finally:
@@ -222,22 +226,49 @@ def init():
     s.vmc_client = _client
 
     def _worker():
+        fail_count = 0              # 连续快速断开次数
+        next_retry_after = 0        # 下次允许重连的时间
+
         while not s.shutdown_flag.is_set():
+            # 已连接：正常心跳
             if _client.connected:
+                fail_count = 0
                 time.sleep(5)
                 continue
 
-            # 探测端口：没开就安静等，不刷屏
+            # 退避期未到：安静等待
+            if time.time() < next_retry_after:
+                time.sleep(5)
+                continue
+
+            # 端口没开：安静等
             if not _port_open(VTS_HOST, VTS_PORT, timeout=0.5):
                 time.sleep(10)
                 continue
 
-            # 端口开着，尝试连
+            # 尝试连接，记录连接存活时长
             print("[VTS] 检测到 VTube Studio 已启动，正在连接...")
+            t_start = time.time()
             _client._connect_once()
+            t_duration = time.time() - t_start
 
-            # 断开后回到探测（静默 5 秒再探）
-            time.sleep(5)
+            # 判定：连接建立了但存活 < 15 秒 = "快速断开"
+            if t_duration < 15:
+                fail_count += 1
+                if fail_count >= 3:
+                    # 3 次快速断开：暂停 5 分钟
+                    next_retry_after = time.time() + 300
+                    print(f"[VTS] 连续快速断开 {fail_count} 次，"
+                          f"暂停 5 分钟（code={_client._last_close_code}）")
+                    fail_count = 0
+                else:
+                    # 第一次、第二次：等 20 秒再试
+                    next_retry_after = time.time() + 20
+                    print(f"[VTS] 快速断开第 {fail_count} 次，20 秒后重试")
+            else:
+                # 正常断开（连接存活超过 15 秒）
+                fail_count = 0
+                next_retry_after = time.time() + 5
 
     threading.Thread(target=_worker, daemon=True).start()
     print("[VTS] 后台探测已启动（未开 VTS 时会安静等待）")

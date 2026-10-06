@@ -590,69 +590,37 @@ def main():
     # ══════════════════════════════════════════════════════
     _pending_reflections = queue.Queue()
 
-    def _maybe_record_episode(user_msg, reply, src):
-        """判断这轮是否值得写入情景记忆（正则规则，不调 LLM）"""
+    def _maybe_record_episode(user_msg, reply, src, client_ref, provider_ref):
+        """用 LLM 判断这轮是否值得写入情景记忆"""
         if not user_msg or not reply:
             return
 
-        import re as _re
+        try:
+            from brain.episodic import judge_should_record, record_episode
 
-        # 用正则替代关键词精确匹配，允许"我"和动词之间插词
-        _user_fact_patterns = [
-            r"我.{0,4}住",                          # 我住 / 我现在住 / 我在杭州住
-            r"我.{0,6}(去过|到过)",                  # 我去过 / 我之前去过
-            r"我.{0,4}(养|有)过",                    # 我养过 / 我有个
-            r"我.{0,6}小时候",
-            r"我.{0,4}(喜欢|讨厌|不爱)",
-            r"我.{0,4}(上学|大学|高中|初中|小学)",
-            r"我.{0,4}(工作|同事|老板)",
-            r"我.{0,4}(朋友|家人|亲戚)",
-            r"我.{0,4}(爸|妈|家|老婆|老公|孩子|儿子|女儿)",
-            r"我.{0,6}(买过|看过|读过|玩过)",
-            r"我.{0,4}搬",
-            r"我(以前|曾经|当年)",
-            r"我.{0,4}有个",
-            r"我.{0,6}认识",
-        ]
-        event_type = None
-        for _pat in _user_fact_patterns:
-            if _re.search(_pat, user_msg):
-                event_type = "user_fact"
-                break
+            should, etype, content, imp_hint = judge_should_record(
+                client_ref, provider_ref, user_msg, reply
+            )
+            if not should or not content:
+                return
 
-        # 用户强烈情绪
-        if not event_type:
-            try:
-                from brain.llm import _is_emotion_event
-                if _is_emotion_event(user_msg):
-                    event_type = "user_emotion"
-            except Exception:
-                pass
+            from brain.persona import get_current_state
+            st = get_current_state()
 
-        # 长对话（有实质内容）
-        if not event_type:
-            if len(user_msg) >= 30 and len(reply) >= 30:
-                event_type = "interaction"
-
-        if not event_type:
-            return
-
-        from brain.episodic import record_episode
-        from brain.persona import get_current_state
-        st = get_current_state()
-
-        content = f"哥哥说：{user_msg[:80]}"
-
-        record_episode(
-            content=content,
-            event_type=event_type,
-            entities=[],
-            self_emotion=st.get("emotion"),
-            self_intent="speak",
-            self_role="responder",
-            channel=src,
-            raw_context=f"哥哥：{user_msg}\n我：{reply}",
-        )
+            record_episode(
+                content=content,
+                event_type=etype,
+                entities=[],
+                self_emotion=st.get("emotion"),
+                self_intent="speak",
+                self_role="responder",
+                channel=src,
+                raw_context=f"哥哥：{user_msg}\n我：{reply}",
+                novelty=imp_hint,
+            )
+            print(f"[L2] LLM判定记录: type={etype} content={content[:40]}")
+        except Exception as e:
+            print(f"[L2] 判定异常: {e}")
 
     def _post_turn_async(client_ref, provider_ref, own_last, user_msg, src,
                           interrupted, ref_queue):
@@ -674,9 +642,10 @@ def main():
         except Exception as e:
             print(f"[self_mood] 异常: {e}")
 
-        # ═══ 2. episodic：情景记忆写入 ═══
+        # ═══ 2. episodic：情景记忆写入（LLM 判断）═══
         try:
-            _maybe_record_episode(user_msg, own_last, src)
+            _maybe_record_episode(user_msg, own_last, src,
+                                   client_ref, provider_ref)
         except Exception as e:
             print(f"[episodic] 异常: {e}")
 
@@ -729,6 +698,18 @@ def main():
         print("[元认知] 观测器已启动")
     except Exception as e:
         print(f"[元认知] 启动失败: {e}")
+
+    # L2 → L1 巩固
+    try:
+        from brain.consolidate import consolidate_loop
+        threading.Thread(
+            target=consolidate_loop,
+            args=(client, provider),
+            daemon=True
+        ).start()
+        print("[巩固] L2→L1 巩固循环已启动")
+    except Exception as e:
+        print(f"[巩固] 启动失败: {e}")
 
     # 启动 HTTP 服务
     api_server.set_context(client, provider, history, session_start)
@@ -1111,7 +1092,7 @@ def main():
                 print(f"[流式播放] 异常: {e}")
                 was_interrupted = False
 
-            _producer_thread.join(timeout=5)
+            # _producer_thread.join(timeout=5)
 
             _producer_thread.join(timeout=5)
 
@@ -1126,8 +1107,6 @@ def main():
                 _fh_append(ui, _rep, source=current_source)
             except Exception as e:
                 print(f"[full_history] 异常: {e}")
-
-            # MC 打字
 
             # MC 打字
             if from_mc:

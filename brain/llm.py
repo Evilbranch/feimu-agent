@@ -1109,9 +1109,9 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
             kwargs = {
                 "model": provider["model"],
                 "messages": msgs,
-                "timeout": 90,
-                "temperature": 0.1,
-                "max_tokens": dmax,
+                "timeout": 120,
+                "temperature": 0.05,
+                "max_tokens": min(dmax, 800),
                 "extra_body": {"keep_alive": "30m", "think": False},
             }
             if use_tools and supports_tools:
@@ -1186,35 +1186,29 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                     return ac
 
                 llm_reply = (msg.content or "").strip()
-                if len(llm_reply) >= 5 and not _is_ai_disclosure(llm_reply):
-                    if len(llm_reply) > 100:
-                        head = llm_reply[:120]
-                        m = None
-                        for _m in re.finditer(r'[。！？!?]', head):
-                            m = _m
-                        if m and m.end() > 50:
-                            llm_reply = head[:m.end()]
-                        else:
-                            llm_reply = head[:80].rstrip("，,。.！!、 ") + "。"
-                    print(f"[工具后回复] 用 LLM 自然语言（{len(llm_reply)}字）")
-                    ac = _clean_markdown(llm_reply)
-                    ac = _strip_actions(ac)
-                    ac = _filter_customer_service(ac)
-                    if not ac or len(ac) < 2:
-                        ac = "……"
-                    ac = _truncate_reply(ac, max_sentences=2)
-                    print(f"   [计时] LLM {time.time()-t0:.2f}s (round {round_i+1})")
+                # 时间/天气/计算这类工具，直接模板回复，不浪费一轮 LLM
+                _simple_tools = ("get_current_time", "get_weather",
+                                  "calculate", "calculate_date")
+                _last_tool_name = tool_results_log[-1].get("tool", "") if tool_results_log else ""
+                if _last_tool_name in _simple_tools:
+                    print(f"[工具直返] {_last_tool_name}，用模板")
+                    final = format_tool_result(
+                        tool_results_log[-1]["tool"],
+                        tool_results_log[-1]["result"],
+                    )
+                    final = _strip_actions(final)
+                    final = _filter_customer_service(final)
+                    if not final or len(final) < 2:
+                        final = "……"
                     history.append({"role": "user", "content": ui})
-                    history.append({"role": "assistant", "content": ac})
+                    history.append({"role": "assistant", "content": final})
                     save_history(history)
                     _skip_rag = any(t["tool"].startswith("mc_") for t in tool_results_log)
                     if s.rag and not _skip_rag:
-                        s.rag.add(ui, ac)
-                    elif _skip_rag:
-                        print(f"[RAG] MC 工具结果，跳过存储")
-                    return ac
+                        s.rag.add(ui, final)
+                    return final
 
-                print(f"[模板拼接] LLM 无自然回复，用模板兜底...")
+                # 其他工具，继续原逻辑
                 if len(tool_results_log) == 1:
                     final = format_tool_result(
                         tool_results_log[0]["tool"],

@@ -175,8 +175,23 @@ def _build_context(s, history):
     except Exception:
         pass
 
+
+    # ══════════════════════════════════════════════════════
+    # L2 情景记忆（让她"想起"过去）
+    # ══════════════════════════════════════════════════════
+    _l2_block = ""
+    try:
+        from brain.episodic import retrieve_episodes, format_episodes_for_prompt
+        # 不传 query，按时间和重要性拿最近的
+        _eps = retrieve_episodes(query=None, top_k=5, days_back=14, min_importance=0.4)
+        if _eps:
+            _l2_block = "\n\n" + format_episodes_for_prompt(_eps, max_items=5)
+    except Exception as e:
+        print(f"[L2-inner] 异常: {e}")
+
     return f"""【当前时间】{time.strftime('%Y年%m月%d日 %H:%M', time.localtime())}
 【时段】{_time_theme()}
+
 【距离上次互动】{elapsed_min} 分钟（{time_hint}）
 【距离上次主动说话】{last_speak_str}
 
@@ -196,7 +211,7 @@ def _build_context(s, history):
 
 {meta_hint_str}
 
-现在请你决定：这次做什么？多久之后再醒？"""
+现在请你决定：这次做什么？多久之后再醒？{_l2_block}"""
 
 
 # ==================== LLM 判断 ====================
@@ -224,6 +239,17 @@ INNER_SYSTEM = """你是绯木。现在是你独处的时间，没有人在跟�
 2. 你的当前情绪——要具体（"突然有点空落落的"），不要空话（"想你了"）
 3. 单纯的打招呼
 4. **可选**：结合上方"时段"提示——比如午饭时间可以提吃饭，深夜可以提早点休息
+5. **优先**：如果你想起了过去和哥哥聊过的事（下方【我记得的事】里有的），可以提起
+
+【关于"我记得的事" - 重要】
+上方可能有【我记得的事】列表，那是你真实记住的事。
+如果你想说点什么，**优先**从这里找素材：
+- "我最近想起你上次说的……"
+- "你之前说你……，我有点想知道后来怎么样了"
+- "我记得你提到过……"
+
+这比"你在忙吗""吃了吗"更像是"你真的记得他"。
+如果你没有素材，宁可 idle，也不要发空泛问候。
 
 ⚠️ 时段只是**参考**，不是命令：
 - 如果你对时段不感兴趣 → 忽略它，说你想说的
@@ -540,7 +566,16 @@ def inner_life_loop(client, provider):
             final_content = content
 
             if intent == "speak":
-                if s.hourly_speak_count >= MAX_SPEAK_PER_HOUR:
+                # ══════════════════════════════════════════════
+                # 深夜硬规则：23:00 ~ 08:00 禁止主动说话
+                # ══════════════════════════════════════════════
+                _hour = time.localtime().tm_hour
+                if _hour >= 23 or _hour < 8:
+                    final_intent = "idle"
+                    final_reason = f"深夜（{_hour}点），禁止主动打扰哥哥"
+                    next_wake = max(next_wake, 3600)
+                    print(f"[内在] 深夜硬拦截：{_hour}点不说")
+                elif s.hourly_speak_count >= MAX_SPEAK_PER_HOUR:
                     final_intent = "idle"
                     final_reason = f"主动已达上限（{MAX_SPEAK_PER_HOUR}/小时）"
                     next_wake = max(next_wake, 1200)

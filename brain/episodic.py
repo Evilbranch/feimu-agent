@@ -270,3 +270,113 @@ def format_episodes_for_prompt(episodes, max_items=3):
         if self_emo and self_emo != "平静":
             lines.append(f"  （我当时{self_emo}）")
     return "\n".join(lines)
+
+# ══════════════════════════════════════════════════════════
+# LLM 判断：这轮对话是否值得记
+# 替代原来的正则匹配（正则太窄，漏掉大量用户信息）
+# ══════════════════════════════════════════════════════════
+_L2_JUDGE_SYSTEM = """你是绯木的记忆整理助手。
+判断这轮对话中，哥哥是否透露了"值得长期记住的信息"。
+
+值得记的：
+- 哥哥的个人事实（住址、生日、工作、家人、作息、习惯）
+- 哥哥的喜好、厌恶、观点、世界观
+- 哥哥的强烈情绪（很开心/很难过）
+- 关系里程碑（"我们认识很久了"、"以后一起做X"）
+- 哥哥明确要求记下的（"记一下"、"记住这个"）
+
+不值得记的：
+- 日常寒暄（早安、晚安、吃了吗）
+- 纯粹的情绪安抚（"你真好"、"抱抱你"）
+- 简单的事实查询（"今天几号"、"天气怎么样"）
+- 已有重复信息
+
+直接输出 JSON，不要任何解释：
+
+{
+  "should_record": true | false,
+  "event_type": "user_fact | user_emotion | user_view | milestone | interaction",
+  "content": "如果 should_record 为 true，用一句话总结（第一人称不用，第三人称不用，直接说事）"
+}
+
+示例：
+输入：哥哥说他每天早上9点学习，下午2点打游戏，晚上6点半健身
+输出：{"should_record": true, "event_type": "user_fact", "content": "哥哥的作息：9点学习/工作，14点游戏，18点半健身"}
+
+输入：哥哥说"我好累"
+输出：{"should_record": true, "event_type": "user_emotion", "content": "哥哥说累"}
+
+输入：哥哥说"今天天气怎么样"
+输出：{"should_record": false, "event_type": "casual", "content": ""}
+
+输入：哥哥说"我认为世界本身就是神，它是虚无的、公平的"
+输出：{"should_record": true, "event_type": "user_view", "content": "哥哥的世界观：世界本身即神，虚无而公平，只观察不干预"}
+
+现在判断下面这轮："""
+
+
+def judge_should_record(client, provider, user_msg, reply):
+    """用 LLM 判断这轮是否值得记
+
+    返回 (should_record, event_type, content, importance_hint)
+    - should_record: bool
+    - event_type: str
+    - content: str（一句话总结）
+    - importance_hint: float（0~1，供参考）
+    """
+    if not user_msg or not client or not provider:
+        return False, "", "", 0.0
+
+    # 快速过滤：太短的日常寒暄不判断，但情绪关键词必须过
+    _EMOTION_QUICK = [
+        "难过", "累", "烦", "痛", "哭", "失业", "失恋",
+        "生病", "孤独", "委屈", "崩溃", "emo", "生气",
+        "开心", "高兴", "成功", "考上", "升职", "赢了",
+    ]
+    if len(user_msg) < 6 and not any(k in user_msg for k in _EMOTION_QUICK):
+        return False, "", "", 0.0
+
+    try:
+        msgs = [
+            {"role": "system", "content": _L2_JUDGE_SYSTEM},
+            {"role": "user", "content": f"哥哥说：{user_msg}\n绯木回：{reply[:80]}"},
+        ]
+        r = client.chat.completions.create(
+            model=provider["model"],
+            messages=msgs,
+            timeout=30,
+            temperature=0.2,
+            max_tokens=200,
+            extra_body={"keep_alive": "30m", "think": False},
+        )
+        text = (r.choices[0].message.content or "").strip()
+        if not text:
+            return False, "", "", 0.0
+
+        import re as _re
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            return False, "", "", 0.0
+
+        data = json.loads(text[start:end + 1])
+        should = bool(data.get("should_record", False))
+        etype = (data.get("event_type") or "casual").strip()
+        content = (data.get("content") or "").strip()
+
+        # 不记录时不返回 importance
+        if not should:
+            return False, "", "", 0.0
+        importance_hint = {
+            "user_fact": 0.8,
+            "user_view": 0.85,
+            "user_emotion": 0.75,
+            "milestone": 1.0,
+            "interaction": 0.6,
+            "casual": 0.2,
+        }.get(etype, 0.3)
+
+        return should, etype, content, importance_hint
+    except Exception as e:
+        print(f"[L2-judge] 异常: {e}")
+        return False, "", "", 0.0

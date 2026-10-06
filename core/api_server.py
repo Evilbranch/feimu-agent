@@ -376,6 +376,34 @@ def _handle_wechat_message(text):
     except Exception as e:
         print(f"[full_history] 异常: {e}")
 
+    # ══════════════════════════════════════════════════════
+    # L2 情景记忆写入（微信路径，之前漏了）
+    # ══════════════════════════════════════════════════════
+    try:
+        from brain.episodic import judge_should_record, record_episode
+        from brain.persona import get_current_state
+
+        _should, _etype, _content, _imp = judge_should_record(
+            _client, _provider, text, rep
+        )
+        if _should and _content:
+            _st = get_current_state()
+            record_episode(
+                content=_content,
+                event_type=_etype,
+                entities=[],
+                self_emotion=_st.get("emotion"),
+                self_intent="speak",
+                self_role="responder",
+                channel="wechat",
+                raw_context=f"哥哥：{text}\n我：{rep}",
+                novelty=_imp,
+            )
+            print(f"[L2] 微信端记录: type={_etype} content={_content[:40]}")
+    except Exception as e:
+        print(f"[L2-微信] 异常: {e}")
+
+
     # L2：她自己的话影响情绪
     try:
         from brain.self_mood import apply_own_speech_impact
