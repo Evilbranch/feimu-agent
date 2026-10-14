@@ -67,6 +67,118 @@ def _time_gap_context(s):
     d = int(gap / 86400)
     return f"\n\n【对话节奏】距离上一轮过去了 {d} 天，好久没见了。"
 
+def _load_l0_context(user_msg):
+    """从 L0 读取跟用户消息相关的认知
+
+    策略：
+    1. user_msg 匹配 topic → 用它
+    2. 匹配不到且 user_msg 短（≤ 15 字）→ 从 last_turn_topics 兜底
+    3. 都失败 → 返回 None
+    """
+    try:
+        from brain.knowledge_gate import _match_l0_topic
+        topic, op = _match_l0_topic(user_msg)
+    except Exception as e:
+        print(f"[L0-流式] 匹配失败: {e}")
+        topic, op = None, None
+
+    # 兜底：短消息（反馈类）走 last_turn_topics
+    if not op and len(user_msg or "") <= 15:
+        try:
+            from brain.l0_model import get_opinion
+            s = state.get_state()
+            last_topics = getattr(s, "last_turn_topics", []) or []
+            for t in last_topics:
+                if not t:
+                    continue
+                _op = get_opinion(t)
+                if _op:
+                    topic = t
+                    op = _op
+                    print(f"[L0-流式] 用 last_turn 兜底: {t}")
+                    break
+        except Exception as e:
+            print(f"[L0-流式] 兜底失败: {e}")
+
+    if not op:
+        return None
+
+    return {
+        "topic": topic,
+        "my_view": op.get("my_view", ""),
+        "my_reason": op.get("my_reason", ""),
+        "my_plan": op.get("my_plan", ""),
+        "confidence": float(op.get("confidence", 0.5)),
+    }
+
+
+def _build_l0_prompt(l0_ctx):
+    """根据 L0 认知生成 prompt 片段"""
+    if not l0_ctx or not l0_ctx.get("my_view"):
+        return ""
+
+    topic = l0_ctx["topic"]
+    my_view = l0_ctx["my_view"]
+    conf = l0_ctx.get("confidence", 0.5)
+    my_reason = l0_ctx.get("my_reason", "")
+    my_plan = l0_ctx.get("my_plan", "")
+
+    parts = [
+        "\n\n【我对这个话题的已有认知 - 必须使用】",
+        f"\n话题：{topic}",
+        f"\n我的观点：{my_view}",
+    ]
+    if my_reason:
+        parts.append(f"\n我的理由：{my_reason}")
+    if my_plan:
+        parts.append(f"\n我的计划：{my_plan}")
+
+    if conf < 0.3:
+        parts.append(
+            "\n（注意：我对这个观点信心不高，"
+            "可以在回答中带一点不确定，但不要完全否定它）"
+        )
+
+    parts.append(
+        "\n\n【回答结构 - 必须遵守】"
+        "\n1. 先用 1~2 句给客观事实（来自'参考资料'）"
+        "\n2. 再用'我觉得'或'我认为'开头，"
+        "说出上面'我的观点'（可近义改述，不能省略）"
+        "\n3. 不要照抄搜索结果的百科语气"
+        "\n4. 不要回避自己的观点，也不要把观点说成事实"
+        "\n5. 如果资料和你的观点冲突，可以指出'但我自己觉得……'"
+    )
+
+    # 反馈场景特殊处理：必须承认 + 说出新观点
+    if _is_feedback_input():
+        parts.append(
+            "\n\n【这是反馈场景 - 特别注意】"
+            "\n哥哥刚刚在纠正你或让你重新想。"
+            "\n你不能反问'你觉得呢'，"
+            "\n也不能只说'我再想想'。"
+            "\n你必须："
+            "\n1. 用 1 句话承认（'嗯，我再想想' / '唔，你说得对'）"
+            "\n2. 立刻给出你'刚刚重新想过之后'的新观点，"
+            "直接用'我觉得……'开头"
+            "\n3. 观点要来自上面'我的观点'，"
+            "可以改述，但不能省"
+        )
+    return "".join(parts)
+
+
+def _is_feedback_input():
+    """判断当前是不是反馈场景（看 state 里最近一次反馈）"""
+    try:
+        s = state.get_state()
+        fb = getattr(s, "last_feedback", None) or {}
+        if fb.get("type") in ("positive", "negative"):
+            # 反馈后 30 秒内算反馈场景
+            ts = fb.get("ts", 0)
+            if time.time() - ts < 30:
+                return True
+    except Exception:
+        pass
+    return False
 
 def ask_ai_streaming(client, provider, history, ui, session_start,
                      speaker="主人", relation="主人", source="owner",
@@ -152,6 +264,17 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
         sysc += "\n\n【参考资料】\n" + "\n".join([f"· {m}" for m in mem])
 
     sysc += _time_gap_context(s)
+
+    # ══════════════════════════════════════════════════════
+    # L0 认知注入（高优先级）
+    # ══════════════════════════════════════════════════════
+    _l0_ctx = _load_l0_context(ui)
+    if _l0_ctx and _l0_ctx.get("my_view"):
+        sysc += _build_l0_prompt(_l0_ctx)
+        print(
+            f"[L0-流式] 注入认知: {_l0_ctx['topic']} "
+            f"(conf={_l0_ctx['confidence']:.2f})"
+        )
 
     sysc += (
         "\n\n【最高优先级 - 当前情绪决定一切】"

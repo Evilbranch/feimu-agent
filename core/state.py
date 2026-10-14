@@ -47,6 +47,11 @@ class State:
         self.last_active_channel = "local"
         self.last_active_channel_time = 0.0
         self.last_wechat_ping_time = 0
+        # ═══ B 阶段：对话内学习循环 ═══
+        self.last_turn_reply = ""           # 上一轮绯木的回复
+        self.last_turn_topics = []          # 上一轮涉及的 L0 topics
+        self.last_feedback = {"type": "neutral", "ts": 0.0}             # 上一次反馈结果
+        self.knowledge_gate_enabled = True  # 知识门控开关
 
 
 _state = None

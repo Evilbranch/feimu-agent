@@ -98,6 +98,15 @@ def main():
                 skipped += 1
                 continue
 
+            # 去重：已存在相同 content 就跳过
+            from brain.episodic import _load_month
+            _existing = {(e.get("content") or "").strip() for e in _load_month()}
+            if content.strip() in _existing:
+                print(f"  → 已存在，跳过")
+                skipped += 1
+                continue
+
+
             # 用原始时间戳写入
             ep_id = record_episode(
                 content=content,

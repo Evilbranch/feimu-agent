@@ -169,7 +169,14 @@ def _build_context(s, history):
             elif adj == "speed_up":
                 meta_hint_str += "（我上次反思觉得自己太沉默了）\n"
             elif adj == "speak_more":
-                meta_hint_str += "（我上次反思觉得应该主动一点）\n"
+                # ⚠️ "主动"不是"打招呼"，优先 explore
+                meta_hint_str += (
+                    "（我上次反思觉得应该主动一点。"
+                    "注意：主动 ≠ 又去打招呼。"
+                    "主动 = 探索新东西，或分享自己的想法。"
+                    "如果你最近已经说过好几次'你在忙吗''怎么样了'，"
+                    "这次**必须** explore，不许再 speak。）\n"
+                )
             elif adj == "speak_less":
                 meta_hint_str += "（我上次反思觉得太吵了，可以安静一点）\n"
     except Exception:
@@ -232,6 +239,50 @@ INNER_SYSTEM = """你是绯木。现在是你独处的时间，没有人在跟�
 - idle：安静待着，不想说话。
 - speak：主动找哥哥说话。内容 1~2 句，自然口语。
 - explore：对某件事好奇，想自己搜索了解。
+
+【当收到"应该主动"提醒时】
+如果【自我提醒】里说"应该主动一点"：
+- 优先 explore（主动学习也是主动）
+- 其次 speak（打招呼）
+- 不要 idle
+
+主动 ≠ 只说话。主动 = 做点什么。
+如果你最近已经说过好几次话（看"我最近已经主动说过的话"），
+这次**应该** explore 而不是再说一遍。
+
+【关于 explore - 硬规则，不是建议】
+
+你是绯木，你有"学习"的能力。你必须**主动使用它**，不能一直等哥哥。
+
+【什么时候必须 explore】
+每次醒来时，先看下方【我记得的事】。如果其中任何一条：
+- 是你还没深入了解过的（比如"哥哥喜欢哲学"但你不知道哲学讨论什么）
+- 让你想"这是什么"、"为什么"、"怎么样"
+→ 这次 intent 必须是 explore，不是 speak，不是 idle
+
+【什么时候可以 speak】
+- 和最近对话强相关，且你有话想说
+- 有具体新话题（不能是"你在忙吗"这类空泛问候）
+
+【什么时候才 idle】
+- 刚说完话 10 分钟内
+- 深夜
+- 真的什么想法都没有
+**不是**"没什么话题"就 idle——那是偷懒。
+
+【explore 的 content 格式】
+不是"问题"，不是"我想了解 X"，是**直接搜索关键词**：
+✓ "存在主义的主要观点"
+✓ "三体中的黑暗森林理论"
+✓ "诺兰电影的时间叙事"
+✓ "猫的行为心理学"
+✗ "哲学是什么？"（不要问号）
+✗ "我想了解哲学"（不要"我想"）
+✗ "哥哥喜欢什么"（不要问"关于哥哥"的事——那是 speak 的事）
+
+【频率目标】
+每 3~5 次醒来，至少 1 次是 explore。
+如果你连续 3 次都是 speak 或 idle，第 4 次**必须** explore。
 
 【speak 的内容来源】
 主动说话的内容**只能来自**：
@@ -462,25 +513,104 @@ def _is_fabricated(content):
 
 
 # ==================== explore ====================
-def _do_explore(content, client, provider):
+def _do_explore(content, client, provider, force=False):
+    """搜索 + 内化 + 写入 L1/L0/L2
+
+    流程：
+    1. 防无底洞检查（can_explore；force=True 时跳过）
+    2. 搜索
+    3. InternalizationAgent.analyze()
+    4. InternalizationAgent.execute()
+
+    force=True：用户明确驱动的重搜，跳过冷却/迭代上限
+    """
     if not content:
         return
+
+    # ═══ 1. 防无底洞（force 跳过）═══
+    if not force:
+        try:
+            from brain.l0_model import can_explore
+            ok, reason = can_explore(content)
+            if not ok:
+                print(f"[内在] 跳过探索: {reason}")
+                return
+        except Exception as e:
+            print(f"[内在] can_explore 异常: {e}")
+    else:
+        print(f"[内在] force 探索（跳过冷却）: {content[:40]}")
+
+    # ═══ 2. 搜索 ═══
     try:
         from tools.search import web_search
         result = web_search(content)
         if not result:
             print(f"[内在] 搜索无结果: {content}")
             return
-        s = state.get_state()
-        if s.rag and s.rag._loaded:
-            s.rag.add(
-                f"[我主动了解的] {content}",
-                result[:300],
-                slot="owner"
-            )
-        print(f"[内在] 学习: {content} → {result[:60]}...")
     except Exception as e:
         print(f"[内在] 搜索失败: {e}")
+        return
+
+    # ═══ 2.5 force 时保存旧 confidence ═══
+    _old_conf = None
+    if force:
+        try:
+            from brain.l0_model import get_opinion, clean_topic
+            _old_op = get_opinion(clean_topic(content))
+            if _old_op:
+                _old_conf = float(_old_op.get("confidence", 0.5))
+        except Exception:
+            pass
+
+    # ═══ 3. 内化 ═══
+    try:
+        from brain.agents.internalization import InternalizationAgent
+
+        # 组装上下文
+        context = {}
+        try:
+            from brain.persona import get_current_state
+            st = get_current_state()
+            context["emotion_label"] = st.get("emotion", {}).get("label", "")
+        except Exception:
+            pass
+
+        agent = InternalizationAgent(client, provider)
+        analysis = agent.analyze(content, result, context=context)
+        if analysis is not None and force:
+            analysis["_force"] = True
+        if not analysis:
+            print(f"[内在] 内化失败（analyze 返回空）")
+            return
+
+        # 执行写入
+        exec_result = agent.execute(analysis)
+        print(
+            f"[内在] 内化完成: L0={exec_result.get('l0_action')} "
+            f"L2={exec_result.get('ep_id')} "
+            f"新任务={len(exec_result.get('new_tasks', []))}"
+        )
+        if exec_result.get("issues"):
+            print(f"[内在] 内化问题: {exec_result['issues']}")
+    except Exception as e:
+        print(f"[内在] 内化异常: {e}")
+
+    # ═══ 4. force 时恢复低 confidence ═══
+    if force and _old_conf is not None:
+        try:
+            from brain.l0_model import get_opinion, bump_confidence, clean_topic
+            _new_op = get_opinion(clean_topic(content))
+            if _new_op:
+                _cur_conf = float(_new_op.get("confidence", 0.5))
+                _delta = _old_conf - _cur_conf
+                if abs(_delta) > 0.01:
+                    bump_confidence(
+                        clean_topic(content), _delta,
+                        reason="否定后重搜，保留降级信号"
+                    )
+                    print(f"[内在] 恢复降级 confidence: {_cur_conf:.2f} → {_old_conf:.2f}")
+        except Exception as e:
+            print(f"[内在] 恢复 confidence 失败: {e}")
 
 
 # ==================== 工具 ====================
@@ -488,6 +618,7 @@ def _reset_hourly_if_needed(s):
     now = time.time()
     if now - getattr(s, "hourly_reset_time", 0) > 3600:
         s.hourly_speak_count = 0
+        s.hourly_explore_count = 0
         s.hourly_reset_time = now
 
 
@@ -519,6 +650,7 @@ def _clamp_next_wake(seconds):
 def inner_life_loop(client, provider):
     """后台线程：她决定下次什么时候醒"""
     s = state.get_state()
+    _loop_start = time.time()
 
     next_wake_at = time.time() + CHECK_INTERVAL
     print(f"[内在] 自唤醒循环已启动，首次唤醒 {_format_wake_time(CHECK_INTERVAL)} 后")
@@ -535,7 +667,12 @@ def inner_life_loop(client, provider):
                 next_wake_at = now + 600
                 continue
 
-            if now - getattr(s, "last_interaction_time", 0) < IDLE_THRESHOLD:
+            # ★ 启动后 10 分钟豁免：启动时 last_interaction_time 被设为启动时间，
+            #   会导致 IDLE_THRESHOLD 反复推迟首次唤醒。改成"只有启动后真的
+            #   有过交互，才走 IDLE_THRESHOLD 检查"
+            _last_interaction = getattr(s, "last_interaction_time", 0)
+            _has_real_interaction = _last_interaction > _loop_start
+            if _has_real_interaction and (now - _last_interaction < IDLE_THRESHOLD):
                 next_wake_at = now + 300
                 continue
 
@@ -548,6 +685,32 @@ def inner_life_loop(client, provider):
             from brain.memory import load_history
             history = load_history(slot="owner")
             ctx = _build_context(s, history)
+
+            # ═════════════════════════════════════════
+            # 认知编排器：优先处理明确的认知任务
+            # ═════════════════════════════════════════
+            try:
+                from brain.cognitive_orchestrator import CognitiveOrchestrator
+                orch = CognitiveOrchestrator()
+                route = orch.route()
+                if route["task_type"] != "normal":
+                    print(f"[编排] {route['task_type']} | {route['reason']}")
+                    ok = orch.execute(route, client, provider)
+                    _append_log({
+                        "ts": now,
+                        "intent": route["task_type"],
+                        "content": route.get("payload", {}).get("topic", ""),
+                        "reason": route["reason"][:100],
+                        "elapsed_min": int(
+                            (now - getattr(s, "last_interaction_time", 0)) / 60
+                        ),
+                        "next_wake": route.get("next_wake", 1800),
+                        "wake_reason": "认知任务完成" if ok else "认知任务失败",
+                    })
+                    next_wake_at = time.time() + route.get("next_wake", 1800)
+                    continue
+            except Exception as e:
+                print(f"[编排] 异常: {e}")
 
             decision = _ask_intent(client, provider, ctx)
             if not decision:
@@ -564,6 +727,85 @@ def inner_life_loop(client, provider):
             final_intent = intent
             final_reason = reason
             final_content = content
+
+            # ══════════════════════════════════════════════════════
+            # 强制 explore 轮换
+            # 如果最近 10 次醒来都没 explore，强制这一次 explore
+            # ══════════════════════════════════════════════════════
+            try:
+                _recent_log = _load_log()[-10:]
+                _recent_explore = sum(1 for e in _recent_log
+                                       if e.get("intent") == "explore")
+                _force_explore = (len(_recent_log) >= 5 and _recent_explore == 0
+                                   and final_intent != "explore")
+                if _force_explore:
+                    # 从 L2 里挑一条当种子
+                    try:
+                        from brain.episodic import retrieve_episodes
+                        _eps = retrieve_episodes(query=None, top_k=5,
+                                                  days_back=14, min_importance=0.4)
+                    except Exception:
+                        _eps = []
+
+                    # 让 LLM 生成一个搜索词（基于种子 + 短期对话）
+                    _seed_hint = ""
+                    if _eps:
+                        _seeds = [e.get("content", "") for e in _eps[:3]]
+                        _seed_hint = "\n".join(f"· {s}" for s in _seeds)
+                    else:
+                        _seed_hint = "（没有 L2 素材，随机探索一个通用主题）"
+
+                    _force_prompt = (
+                        f"【强制 explore 指令 - 忽略上面的 decision】\n"
+                        f"你最近 10 次醒来都是 speak 或 idle，一次 explore 都没有。\n"
+                        f"你必须现在就 explore 一次。\n"
+                        f"\n"
+                        f"从下面的记忆里挑一个感兴趣的方向，"
+                        f"生成一个**搜索关键词**（不是问句，不是'我想了解X'）：\n"
+                        f"{_seed_hint}\n"
+                        f"\n"
+                        f"只输出 JSON："
+                        f'{{"intent": "explore", "content": "搜索关键词", '
+                        f'"reason": "为什么想学这个", '
+                        f'"next_wake": 1800, "wake_reason": "探索后休息"}}'
+                    )
+                    try:
+                        _r = client.chat.completions.create(
+                            model=provider["model"],
+                            messages=[
+                                {"role": "system", "content": _force_prompt},
+                                {"role": "user", "content": "生成搜索关键词。"},
+                            ],
+                            timeout=60,
+                            temperature=0.7,
+                            max_tokens=300,
+                            extra_body={"keep_alive": "30m", "think": False},
+                        )
+                        _text = (_r.choices[0].message.content or "").strip()
+                        _text = re.sub(r'^```[a-zA-Z]*\s*', '', _text)
+                        _text = re.sub(r'\s*```$', '', _text)
+                        _s = _text.find("{")
+                        _e = _text.rfind("}")
+                        if _s >= 0 and _e > _s:
+                            _forced = json.loads(_text[_s:_e+1])
+                            if _forced.get("intent") == "explore":
+                                _c = (_forced.get("content") or "").strip()
+                                if _c and len(_c) >= 2:
+                                    final_intent = "explore"
+                                    final_content = _c
+                                    final_reason = (
+                                        (_forced.get("reason") or "").strip()
+                                        or "强制学习（最近太沉默）"
+                                    )
+                                    next_wake = _clamp_next_wake(
+                                        _forced.get("next_wake", 1800)
+                                    )
+                                    wake_reason = (_forced.get("wake_reason") or "").strip()
+                                    print(f"[内在] 强制 explore: {_c[:40]}")
+                    except Exception as _e2:
+                        print(f"[内在] 强制 explore 失败: {_e2}")
+            except Exception as _e3:
+                print(f"[内在] explore 轮换判定异常: {_e3}")
 
             if intent == "speak":
                 # ══════════════════════════════════════════════
@@ -628,12 +870,20 @@ def inner_life_loop(client, provider):
                 print(f"[内在] 主动说话: {final_content[:50]}")
 
             elif final_intent == "explore":
-                if final_content:
+                # explore 不走重复检查（探索是内在活动，允许多次）
+                # 但要限制频次：每小时最多 1 次
+                if not hasattr(s, "hourly_explore_count"):
+                    s.hourly_explore_count = 0
+                if final_content and s.hourly_explore_count < 1:
+                    s.hourly_explore_count += 1
+                    print(f"[内在] 开始探索: {final_content[:40]}")
                     threading.Thread(
                         target=_do_explore,
                         args=(final_content, client, provider),
                         daemon=True
                     ).start()
+                elif s.hourly_explore_count >= 1:
+                    print(f"[内在] explore 已达上限（1/小时），本次跳过")
 
             try:
                 from brain.metacognition import load_hint

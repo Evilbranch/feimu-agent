@@ -321,27 +321,124 @@ def handle_slash_command(ui, s):
             if not logs:
                 print("\n（还没有内在日志）\n")
                 return True
-            print("\n=== 最近的内在活动 ===")
+
+            now = time.time()
+            print(f"\n=== 最近的内在活动（当前 {time.strftime('%H:%M:%S')}）===")
+
             for e in logs:
-                t = time.strftime("%H:%M", time.localtime(e["ts"]))
+                ts = e.get("ts", 0)
+                t = time.strftime("%m-%d %H:%M", time.localtime(ts))
+                # 距今
+                delta_min = int((now - ts) / 60)
+                if delta_min < 1:
+                    ago = "刚刚"
+                elif delta_min < 60:
+                    ago = f"{delta_min}分钟前"
+                else:
+                    h = delta_min // 60
+                    m = delta_min % 60
+                    ago = f"{h}小时{m}分钟前" if m else f"{h}小时前"
+
                 content = e.get("content", "") or ""
                 reason = e.get("reason", "") or ""
                 next_wake = e.get("next_wake")
                 wake_reason = e.get("wake_reason", "") or ""
-                line = f"  [{t}] {e['intent']:8s}"
+
+                line = f"  [{t}] ({ago}) {e['intent']:8s}"
                 if content:
                     line += f" {content[:40]}"
                 print(line)
                 if reason:
                     print(f"         → {reason}")
                 if next_wake:
+                    wake_at = ts + next_wake
+                    wake_str = time.strftime("%H:%M", time.localtime(wake_at))
                     m = next_wake // 60
                     w = f"{m}分钟" if m < 60 else f"{m // 60}小时"
-                    print(f"         ⏰ {w}后醒 ({wake_reason})")
+                    print(f"         ⏰ 下次 {wake_str}（{w}后）({wake_reason})")
+
+            # 下一轮预计唤醒（绝对时间）
+            last = logs[-1]
+            last_next = last.get("next_wake", 0)
+            if last_next:
+                wake_at = last.get("ts", 0) + last_next
+                wake_str = time.strftime("%H:%M", time.localtime(wake_at))
+                remain_min = int((wake_at - now) / 60)
+                if remain_min < 0:
+                    print(f"\n下一轮：应该醒了（{wake_str} 已过）")
+                else:
+                    print(f"\n下一轮预计唤醒：{wake_str}（距今 {remain_min} 分钟）")
+
             print("========================\n")
         except Exception as e:
             print(f"[内在] 读取失败: {e}")
         return True
+
+    elif cmd in ["l0", "自我", "核心自我"]:
+        try:
+            from brain.l0_model import load_self_model
+            m = load_self_model()
+            print("\n=== L0 核心自我 ===")
+            si = m.get("self_identity", {})
+            who = si.get("who_i_am", {})
+            print(f"  我是谁：{who.get('statement', '')}")
+            print(f"  价值观：{', '.join(si.get('core_values', []))}")
+            print(f"  边界：{', '.join(si.get('boundaries', []))}")
+            ops = m.get("opinions", {})
+            print(f"\n  观点（{len(ops)} 个）：")
+            for topic, op in ops.items():
+                conf = op.get("confidence", 0)
+                it = op.get("iteration_count", 0)
+                print(f"    · {topic}（conf={conf:.2f}, iter={it}）")
+                print(f"      {op.get('my_view', '')[:60]}")
+            oqs = m.get("open_questions", [])
+            print(f"\n  未解问题：{len(oqs)} 个")
+            print("===================\n")
+        except Exception as e:
+            print(f"[L0] 读取失败: {e}")
+        return True
+
+    elif cmd in ["learning", "学习任务", "tasks"]:
+        try:
+            from brain.l0_model import list_learning_tasks
+            tasks = list_learning_tasks("all")
+            pending = [t for t in tasks if t.get("status") == "pending"]
+            done = [t for t in tasks if t.get("status") == "completed"]
+            print(f"\n=== 学习任务（pending {len(pending)} / done {len(done)}）===")
+            if pending:
+                print("  【待执行】")
+                for t in pending:
+                    print(f"    · {t.get('topic', '')}（p={t.get('priority', 0):.2f}）")
+                    print(f"      {t.get('reason', '')[:60]}")
+            if done:
+                print("  【已完成】")
+                for t in done[-5:]:
+                    print(f"    · {t.get('topic', '')}")
+            print("========================\n")
+        except Exception as e:
+            print(f"[learning] 读取失败: {e}")
+        return True
+
+    elif cmd.startswith("l0-history "):
+        try:
+            topic = ui[1:].strip()[len("l0-history "):].strip()
+            from brain.l0_model import get_history
+            hist = get_history(topic)
+            if not hist:
+                print(f"\n（没有 {topic} 的观点历史）\n")
+                return True
+            print(f"\n=== {topic} 的观点演变（{len(hist)} 版）===")
+            for h in hist:
+                v = h.get("version", "?")
+                ts = h.get("ts", "")
+                conf = h.get("confidence", 0)
+                print(f"  v{v} [{ts}] conf={conf:.2f}")
+                print(f"    {h.get('view', '')}")
+            print("========================\n")
+        except Exception as e:
+            print(f"[l0-history] 失败: {e}")
+        return True
+    
     elif cmd in ["episodes", "情景", "记忆片段"]:
         try:
             from brain.episodic import retrieve_episodes
@@ -364,6 +461,27 @@ def handle_slash_command(ui, s):
         except Exception as e:
             print(f"[情景] 读取失败: {e}")
         return True
+    elif cmd in ("explore", "学习", "探索") or cmd.startswith(("explore ", "学习 ", "探索 ")):
+        try:
+            parts = ui[1:].split(maxsplit=1)
+            if len(parts) < 2:
+                print("[探索] 用法：/explore 关键词")
+                return True
+            keyword = parts[1].strip()
+            from core import api_server as _api
+            from brain.inner_life import _do_explore
+            if not _api._client or not _api._provider:
+                print("[探索] 大脑未就绪")
+                return True
+            threading.Thread(
+                target=_do_explore,
+                args=(keyword, _api._client, _api._provider),
+                daemon=True
+            ).start()
+            print(f"[探索] 已启动：{keyword}")
+        except Exception as e:
+            print(f"[探索] 失败: {e}")
+        return True
     elif cmd in ["help", "帮助"]:
         print("\n=== 可用命令 ===")
         print("  /mute        - 静音")
@@ -382,6 +500,10 @@ def handle_slash_command(ui, s):
         print("  /reflect     - 手动触发反思")
         print("  /inner       - 查看她最近在想什么")
         print("  /episodes    - 查看最近 7 天的情景记忆")
+        print("  /l0          - 查看 L0 核心自我")
+        print("  /learning    - 查看学习任务")
+        print("  /l0-history <topic> - 查看观点演变")
+        print("  /explore KW  - 手动触发探索（测试用）")
         print("  /quit        - 退出程序")
         print("  \"\"\"          - 多行输入")
         print("================\n")
@@ -466,7 +588,7 @@ def main():
     fb_client = build_client(fb) if fb else None
 
     def delayed():
-        time.sleep(180)
+        time.sleep(30)
         print("\n[RAG] 开始加载嵌入模型...")
         s.rag.start_background_load()
         print("[RAG] 加载完成")
@@ -582,6 +704,132 @@ def main():
     history = load_history(slot="owner")
     if history: print(f"[已加载 {len(history)} 条 owner 槽短期记忆]\n")
 
+    # ══════════════════════════════════════════════════════
+    # B 阶段：对话内学习循环（闭包）
+    # ══════════════════════════════════════════════════════
+    def _do_feedback_capture(user_msg):
+        """检测用户反馈并写回 L0
+
+        topic 选择策略（按优先级）：
+        1. last_turn_topics 里完整出现的 topic
+        2. L0 里所有 topics 里跟 user_msg 最匹配的
+        3. last_turn_topics[-1] 兜底
+        """
+        try:
+            from brain.feedback_capture import detect_feedback, apply_feedback
+            fb = detect_feedback(user_msg, getattr(s, "last_turn_reply", ""))
+            if fb["type"] == "neutral":
+                return None
+
+            # ★ 不再只依赖 s.last_turn_topics
+            topic = fb.get("topic")
+            if not topic:
+                topic = _pick_feedback_topic(user_msg)
+
+            fb["topic"] = topic
+            if not topic:
+                print(f"[反馈] {fb['type']} 但无 topic，忽略")
+                return None
+
+            ok, info = apply_feedback(fb, topic=topic)
+            if ok:
+                print(
+                    f"[反馈] {fb['type']} -> {topic} "
+                    f"conf={info.get('new_confidence', 0):.2f}"
+                )
+                import time as _t
+                fb["ts"] = _t.time()
+                s.last_feedback = fb
+                return fb
+        except Exception as e:
+            print(f"[反馈] 异常: {e}")
+        return None
+
+    def _pick_feedback_topic(user_msg):
+        """挑反馈针对的 topic
+
+        优先级：
+        1. last_turn_topics 完整出现
+        2. L0 里跟 user_msg 核心字最匹配的
+        3. last_turn_topics[-1]
+        """
+        # 1. last_turn_topics 完整出现
+        try:
+            last_topics = getattr(s, "last_turn_topics", []) or []
+            for t in last_topics:
+                if t and t in user_msg:
+                    return t
+        except Exception:
+            last_topics = []
+
+        # 2. L0 里做核心字匹配
+        try:
+            from brain.l0_model import list_opinions, _topic_core_chars
+            user_chars = set(user_msg or "")
+            candidates = []
+            for topic in list_opinions().keys():
+                if not topic:
+                    continue
+                core = _topic_core_chars(topic)
+                if not core:
+                    continue
+                # topic 核心字里有多少在 user_msg 里
+                hit = len(core & user_chars)
+                if hit >= 2:  # 至少 2 个字命中
+                    candidates.append((topic, hit))
+            if candidates:
+                return max(candidates, key=lambda x: x[1])[0]
+        except Exception as e:
+            print(f"[反馈] L0 匹配失败: {e}")
+
+        # 3. last_turn_topics[-1]
+        if last_topics:
+            return last_topics[-1]
+        return None
+
+    def _do_knowledge_gate(user_msg):
+        """知识门控：判断该不该搜索"""
+        if not getattr(s, "knowledge_gate_enabled", True):
+            return None
+        try:
+            from brain.knowledge_gate import quick_check, judge_need_search
+            verdict = quick_check(user_msg)
+            print(f"[知识门控] {verdict['verdict']} | {verdict['reason']}")
+            if verdict["verdict"] == "chitchat":
+                return None
+            if verdict["verdict"] == "skip":
+                return {
+                    "l0_topic": verdict["l0_topic"],
+                    "l0_view": verdict["l0_view"],
+                    "l0_confidence": verdict["l0_confidence"],
+                    "need_search": False,
+                }
+            if verdict["verdict"] == "search":
+                return {
+                    "l0_topic": None,
+                    "l0_view": "",
+                    "l0_confidence": 0.0,
+                    "need_search": True,
+                    "search_query": user_msg[:40],
+                }
+            # verdict == "check"
+            judge = judge_need_search(
+                client, provider, user_msg,
+                verdict["l0_topic"], verdict["l0_view"],
+                verdict["l0_confidence"],
+            )
+            print(f"[知识门控] judge: {judge['reason']}")
+            return {
+                "l0_topic": verdict["l0_topic"],
+                "l0_view": verdict["l0_view"],
+                "l0_confidence": verdict["l0_confidence"],
+                "need_search": judge["need_search"],
+                "search_query": judge.get("search_query", user_msg[:40]),
+            }
+        except Exception as e:
+            print(f"[知识门控] 异常: {e}")
+            return None
+
     session_start = time.time()
     cooldown = 0; conv_until = 0
 
@@ -630,7 +878,7 @@ def main():
         - episodic：从这轮对话抽取情景记忆
         - L4：生成自我反思文本，放入 ref_queue
         - L4 不再 TTS 播放（自语是内心话，不该读出来）
-        - L4 加编造检查：命中"今天/最近/总是"等时间/频次/感知词 → 丢弃
+        - L4 加编造检查：命中"看到/听到/在公园"等 → 丢弃
         """
         if interrupted or not own_last:
             return
@@ -1043,6 +1291,70 @@ def main():
             print("绯木：思考中...", end="\r")
             if tray: tray.set_status("think")
 
+            # ══════════════════════════════════════════════
+            # B 阶段：反馈捕获
+            # ══════════════════════════════════════════════
+            _fb = _do_feedback_capture(ui)
+            _need_research = bool(_fb and _fb.get("type") == "negative")
+
+            # ══════════════════════════════════════════════
+            # B 阶段：知识门控
+            # 反馈消息本身不再跑门控（它已经处理完了）
+            # ══════════════════════════════════════════════
+            _gate = None
+
+            if _fb and _fb.get("type") != "neutral":
+                # 这是反馈消息 → 只做重搜，不跑门控
+                if _need_research and _fb.get("topic"):
+                    print(f"[反馈] 否定触发重搜: {_fb['topic']}")
+                    try:
+                        from brain.inner_life import _do_explore
+                        _do_explore(_fb["topic"], ac, ap, force=True)
+                        # 重搜后重新读取 L0 状态（不再跑 quick_check）
+                        try:
+                            from brain.l0_model import get_opinion
+                            _op = get_opinion(_fb["topic"])
+                            if _op:
+                                _gate = {
+                                    "l0_topic": _fb["topic"],
+                                    "l0_view": _op.get("my_view", ""),
+                                    "l0_confidence": _op.get("confidence", 0.5),
+                                    "need_search": False,
+                                }
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        print(f"[反馈] 重搜失败: {e}")
+            else:
+                # 正常消息 → 走门控
+                _gate = _do_knowledge_gate(ui)
+
+                if _gate and _gate.get("need_search"):
+                    _sq_search = _gate.get("search_query") or ui[:40]
+                    print(f"[知识门控] 触发搜索: {_sq_search}")
+                    try:
+                        from brain.inner_life import _do_explore
+                        _do_explore(_sq_search, ac, ap, force=True)
+                        # 重新读一遍 L0
+                        try:
+                            from brain.l0_model import get_opinion
+                            _op = get_opinion(_sq_search)
+                            if _op:
+                                _gate = {
+                                    "l0_topic": _sq_search,
+                                    "l0_view": _op.get("my_view", ""),
+                                    "l0_confidence": _op.get("confidence", 0.5),
+                                    "need_search": False,
+                                }
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        print(f"[知识门控] 搜索失败: {e}")
+
+            # L0 认知注入已经在 streaming.py / ask_ai 里做了
+            # 这里只保留 history 引用
+            _history_with_gate = history
+
             # 流式对话
             _sq = queue.Queue(maxsize=3)
 
@@ -1050,7 +1362,7 @@ def main():
                 try:
                     from brain.streaming import ask_ai_streaming
                     ask_ai_streaming(
-                        ac, ap, history, ui, session_start,
+                        ac, ap, _history_with_gate, ui, session_start,
                         speaker=speaker, relation=relation,
                         source=current_source, out_queue=_sq
                     )
@@ -1092,8 +1404,6 @@ def main():
                 print(f"[流式播放] 异常: {e}")
                 was_interrupted = False
 
-            # _producer_thread.join(timeout=5)
-
             _producer_thread.join(timeout=5)
 
             # 完整对话历史
@@ -1107,6 +1417,29 @@ def main():
                 _fh_append(ui, _rep, source=current_source)
             except Exception as e:
                 print(f"[full_history] 异常: {e}")
+
+            # ═══ B 阶段：记录本轮 reply 和 topics ═══
+            try:
+                _my_reply = ""
+                for _m in reversed(history):
+                    if _m.get("role") == "assistant" and _m.get("content"):
+                        _my_reply = _m["content"].strip()
+                        break
+                s.last_turn_reply = _my_reply
+
+                try:
+                    from brain.l0_model import list_opinions
+                    _ops = list_opinions()
+                    _matched = []
+                    _haystack = (ui or "") + " " + (_my_reply or "")
+                    for _t in _ops.keys():
+                        if _t and _t in _haystack:
+                            _matched.append(_t)
+                    s.last_turn_topics = _matched
+                except Exception:
+                    s.last_turn_topics = []
+            except Exception as e:
+                print(f"[反馈] 记录轮次信息失败: {e}")
 
             # MC 打字
             if from_mc:
