@@ -199,16 +199,47 @@ def _filter_customer_service(text):
     original = text
     hit_any = False
 
-    for pat in _CUSTOMER_SERVICE_PATTERNS:
-        if pat in text:
-            text = text.replace(pat, '')
-            hit_any = True
+    # ═══ 1. 子句级剔除：按逗号/句号切，每个子句单独判 ═══
+    _parts = re.split(r'([，,。！？!?])', text)
+    _kept = []
+    _i = 0
+    while _i < len(_parts):
+        _seg = _parts[_i]
+        _punct = _parts[_i + 1] if _i + 1 < len(_parts) else ""
+        _i += 2
+        if not _seg.strip():
+            continue
 
+        # ★ 先看这个子句有没有命中任何客服话术
+        _hit_pattern = any(_pat in _seg for _pat in _CUSTOMER_SERVICE_PATTERNS)
+
+        if not _hit_pattern:
+            # 没命中 → 保留原句（比如"早上好""你好"这种正常寒暄）
+            _kept.append(_seg + _punct)
+            continue
+
+        # 命中了 → 去掉客服词后还剩多少实质内容？
+        _stripped = _seg
+        for _pat in _CUSTOMER_SERVICE_PATTERNS:
+            _stripped = _stripped.replace(_pat, '')
+        _stripped = _stripped.strip().strip("，,。.！!、 ")
+
+        # 剩余 ≤ 4 字 → 视为纯客服子句 → 丢弃
+        if len(_stripped) <= 4:
+            hit_any = True
+            continue
+
+        # 否则保留原子句
+        _kept.append(_seg + _punct)
+
+    text = "".join(_kept)
+
+    # ═══ 2. 安全替换 ═══
     if '您' in text:
         text = text.replace('您', '你')
         hit_any = True
 
-    replacements = [
+    _safe_replacements = [
         ("我看到你提到", "你说"),
         ("我看到你说", "你说"),
         ("我听到你说", "你说"),
@@ -217,11 +248,12 @@ def _filter_customer_service(text):
         ("我看到", "你说"),
         ("我听到", "你说"),
     ]
-    for old, new in replacements:
+    for old, new in _safe_replacements:
         if old in text:
             text = text.replace(old, new)
             hit_any = True
 
+    # ═══ 3. 清理 ═══
     text = re.sub(r'[，,]{2,}', '，', text)
     text = re.sub(r'[！!]{2,}', '！', text)
     text = re.sub(r'[。.]{2,}', '。', text)
@@ -229,6 +261,7 @@ def _filter_customer_service(text):
     text = re.sub(r'[，,。]?\s*(或者|还是|比如|然后|所以说)\s*[？?。，,！!]?\s*$', '', text)
     text = re.sub(r'[，,、]\s*$', '', text)
     text = re.sub(r'[，,]\s*([？?！!。])', r'\1', text)
+    text = re.sub(r'^\s*[，,。]+', '', text)   # 去句首标点
     text = re.sub(r'\s+', ' ', text)
     text = text.strip().strip("，,。.！!、 ")
 

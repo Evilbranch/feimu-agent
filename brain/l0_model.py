@@ -26,7 +26,7 @@ _lock = threading.Lock()
 
 MAX_ITERATIONS = 10
 SIMILARITY_THRESHOLD = 0.85
-SNAPSHOT_KEEP = 30
+SNAPSHOT_KEEP = 10
 
 
 # ══════════════════════════════════════════════════════
@@ -115,6 +115,7 @@ _TOPIC_PREFIXES = [
     "你重新想", "重新想", "再想一下", "再想想",
     "你再说一遍", "再说一遍", "重新说",
     "重新回答", "重新答", "重答", "重说", "重讲",
+    "你知道", "你知道吗", "你知不知道", "你可知道",
 ]
 
 # 连接词/疑问词：在语义对比时要去掉
@@ -616,3 +617,91 @@ def bump_confidence(topic, delta, reason=""):
         save_self_model(m, snapshot=True)
         print(f"[L0] bump {topic}: {old_conf:.2f} -> {new_conf:.2f} ({reason})")
         return True, new_conf
+
+# ══════════════════════════════════════════════════════
+# 质变点 3：open_questions 被"想起"
+# ══════════════════════════════════════════════════════
+_OQ_STOPCHARS = set("的了呢嘛呀吧啊是我你他她它们这那什么怎么如何为什么？?！!。.，,、；;：: \t\n\"'「」『』")
+
+
+def _oq_core_chars(text):
+    """提取文本核心字符（去虚词、去标点）"""
+    if not text:
+        return set()
+    return set(c for c in text if c not in _OQ_STOPCHARS and c.strip())
+
+
+def find_relevant_open_questions(user_msg, top_k=2, min_score=0.3):
+    """从 open_questions 里找和当前消息相关的
+
+    匹配算法：字符集 jaccard
+    - user_msg 和 question 都做核心字提取
+    - 交集 / 并集 >= min_score 算命中
+
+    返回：[{"id":..., "question":..., "score":..., "refs":...}, ...]
+    按 score 降序，最多 top_k 条
+    """
+    if not user_msg:
+        return []
+
+    user_chars = _oq_core_chars(user_msg)
+    if not user_chars:
+        return []
+
+    m = load_self_model()
+    questions = m.get("open_questions", [])
+    if not questions:
+        return []
+
+    scored = []
+    for q in questions:
+        if q.get("status") != "exploring":
+            continue
+        q_text = q.get("question", "")
+        if not q_text:
+            continue
+
+        q_chars = _oq_core_chars(q_text)
+        if not q_chars:
+            continue
+
+        inter = len(user_chars & q_chars)
+        union = len(user_chars | q_chars)
+        score = inter / union if union > 0 else 0.0
+
+        if score >= min_score:
+            scored.append({
+                "id": q.get("id"),
+                "question": q_text,
+                "score": round(score, 3),
+                "refs": int(q.get("refs", 0)),
+            })
+
+    scored.sort(key=lambda x: -x["score"])
+    return scored[:top_k]
+
+
+def touch_open_question(qid, note=""):
+    """标记某个 open_question 被"想起来"了一次
+
+    - refs += 1
+    - last_progress 更新为当前时间
+    - 如果 note 非空，追加到 hypotheses
+    """
+    if not qid:
+        return False
+
+    with _lock:
+        m = load_self_model()
+        for q in m.get("open_questions", []):
+            if q.get("id") == qid:
+                q["refs"] = int(q.get("refs", 0)) + 1
+                q["last_progress"] = _now_iso()
+                if note:
+                    q.setdefault("hypotheses", []).append(
+                        f"（{_now_iso()[:10]}）{note}"
+                    )
+                save_self_model(m, snapshot=False)
+                print(f"[L0] touch open_question: {qid} refs={q['refs']}")
+                return True
+        return False

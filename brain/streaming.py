@@ -83,7 +83,16 @@ def _load_l0_context(user_msg):
         topic, op = None, None
 
     # 兜底：短消息（反馈类）走 last_turn_topics
-    if not op and len(user_msg or "") <= 15:
+    # ★ 但不包括纯寒暄（早上好/晚安/在吗这种）
+    _GREETINGS = (
+        "早上好", "早安", "午安", "下午好", "晚上好", "晚安", "夜里好",
+        "你好", "嗨", "hi", "hello", "在吗", "在不在",
+        "吃了吗", "吃饭了吗", "睡了吗",
+    )
+    _is_greeting = any(
+        (user_msg or "").strip().startswith(g) for g in _GREETINGS
+    )
+    if not op and len(user_msg or "") <= 15 and not _is_greeting:
         try:
             from brain.l0_model import get_opinion
             s = state.get_state()
@@ -165,6 +174,44 @@ def _build_l0_prompt(l0_ctx):
         )
     return "".join(parts)
 
+def _build_open_questions_prompt(matched_questions):
+    """根据命中的 open_questions 生成 prompt 片段
+
+    强约束：必须原样引用注入的问句，不许自己编。
+    """
+    if not matched_questions:
+        return ""
+
+    # 只取分最高的那条（多条会让她混乱）
+    q = matched_questions[0]
+    q_text = q.get("question", "")
+    refs = q.get("refs", 0)
+
+    if refs >= 2:
+        ref_desc = f'（"我心里挂了好几天了"的力度）'
+    else:
+        ref_desc = f'（"刚想起来"的力度）'
+
+    lines = [
+        "\n\n【你必须在这一轮提到这件事】",
+        f"\n系统判断这次对话和下面这条**未解的心事**相关：",
+        f'\n  【{q_text}】',
+        f"\n力度：{ref_desc}",
+        "\n\n【如何提】",
+        "\n1. 先正常回答用户当前问题（1~2 句）",
+        "\n2. 然后用一句话自然过渡，例如：",
+        "\n   · '诶，说到这个，我前两天一直在想——'",
+        "\n   · '对了，我之前还纠结过一件事——'",
+        "\n3. 然后**原样说出上面方括号里的句子**（可改标点，不能改字）",
+        "\n",
+        "\n【禁止】",
+        "\n- 不许自己编一个新问题替代它",
+        "\n- 不许省略它（除非对话完全不相关——但系统已经判断相关了）",
+        "\n- 不许反复提（这一轮提一次就够）",
+        f"\n\n重复确认：你要说的问句是【{q_text}】，"
+        f"不是别的。",
+    ]
+    return "".join(lines)
 
 def _is_feedback_input():
     """判断当前是不是反馈场景（看 state 里最近一次反馈）"""
@@ -178,6 +225,50 @@ def _is_feedback_input():
                 return True
     except Exception:
         pass
+    return False
+
+# ══════════════════════════════════════════════════════
+# 反问节流：记录最近几轮是否以问句结尾
+# ══════════════════════════════════════════════════════
+_recent_question_endings = []
+
+
+def _ends_with_question(text):
+    """判断回复中是否包含问句（不限于结尾）
+
+    她的反问经常出现在中段（"你觉得呢？我是这么想的"），
+    所以不能只看结尾。
+    """
+    if not text:
+        return False
+    return ("?" in text) or ("？" in text)
+
+
+def _should_throttle_question():
+    """检查是否要触发反问节流（最近 2 轮都以问句结尾）"""
+    if len(_recent_question_endings) < 2:
+        return False
+    return all(_recent_question_endings[-2:])
+
+
+def _record_question_ending(ac):
+    """记录本轮的结尾类型"""
+    _recent_question_endings.append(_ends_with_question(ac))
+    if len(_recent_question_endings) > 5:
+        _recent_question_endings.pop(0)
+
+def _is_question_sentence(text):
+    """判断一句话是不是问句"""
+    if not text:
+        return False
+    s = text.strip()
+    if s.endswith("?") or s.endswith("？"):
+        return True
+    # 含疑问词且带"吗/呢/吧"结尾
+    if s.endswith("吗") or s.endswith("吗？") or s.endswith("吗?"):
+        return True
+    if s.endswith("呢") or s.endswith("呢？"):
+        return True
     return False
 
 def ask_ai_streaming(client, provider, history, ui, session_start,
@@ -265,6 +356,26 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
 
     sysc += _time_gap_context(s)
 
+    # ═══ 反问节流（硬规则）═══
+    _throttle_question = _should_throttle_question()
+    if _throttle_question:
+        sysc += (
+            "\n\n【反问节流 - 硬规则】"
+            "\n你最近两次回复都以问句结尾，这已经被主人反复提醒。"
+            "\n这次**禁止**用任何问句。"
+            "\n\n反例（禁止）："
+            "\n- '哥哥想试试吗？'"
+            "\n- '你觉得呢？'"
+            "\n- '还有什么想问的吗？'"
+            "\n\n正例（必须这样结尾）："
+            "\n- '……我先说这么多。'"
+            "\n- '……我是这么想的。'"
+            "\n- '……这是我目前的看法。'"
+            "\n\n最后一句必须用句号结尾。"
+            "\n如果想问'你觉得呢'，改成'我是这么想的'。"
+        )
+        print("[反问节流] 连续 2 轮以问句结尾，本次强制陈述句")
+
     # ══════════════════════════════════════════════════════
     # L0 认知注入（高优先级）
     # ══════════════════════════════════════════════════════
@@ -275,6 +386,24 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
             f"[L0-流式] 注入认知: {_l0_ctx['topic']} "
             f"(conf={_l0_ctx['confidence']:.2f})"
         )
+
+    # ══════════════════════════════════════════════════════
+    # 质变点 3：open_questions 被"想起"
+    # ══════════════════════════════════════════════════════
+    try:
+        from brain.l0_model import find_relevant_open_questions, touch_open_question
+        _matched_oq = find_relevant_open_questions(ui, top_k=2)
+        if _matched_oq:
+            sysc += _build_open_questions_prompt(_matched_oq)
+            print(
+                f"[openQ] 命中 {len(_matched_oq)} 条: "
+                + ", ".join(f"{q['question'][:15]}({q['score']})" for q in _matched_oq)
+            )
+            # 标记被想起（不在对话结束后立即 touch，避免污染；只记 refs）
+            for _q in _matched_oq:
+                touch_open_question(_q["id"])
+    except Exception as e:
+        print(f"[openQ] 异常: {e}")
 
     sysc += (
         "\n\n【最高优先级 - 当前情绪决定一切】"
@@ -422,6 +551,11 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
                 if not cleaned or len(cleaned) < 2:
                     continue
 
+                # ★ 反问节流：命中时丢掉问句
+                if _throttle_question and _is_question_sentence(cleaned):
+                    print(f"[反问节流] 拦截问句: {cleaned[:40]}")
+                    continue
+
                 if _cold_mode and not _first_checked[0]:
                     _hits = is_soft_output(cleaned)
                     if _hits:
@@ -443,6 +577,9 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
 
         if not _interrupted[0] and buf.strip():
             cleaned = _clean_sentence(buf.strip())
+            if _throttle_question and _is_question_sentence(cleaned):
+                print(f"[反问节流] 拦截末尾问句: {cleaned[:40]}")
+                cleaned = ""
 
             if _cold_mode:
                 _is_empty = (not cleaned or len(cleaned) < 2)
@@ -472,6 +609,11 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
         except Exception:
             pass
 
+    # ★ 反问节流兜底：如果全被拦了，补一句陈述
+    if _throttle_question and out_queue.empty():
+        print("[反问节流] 全部被拦，补兜底陈述")
+        out_queue.put("嗯，我先说这么多。")
+
     if _interrupted[0]:
         print("[语气守卫] 首句讨好，中断流式，改走非流式路径（含重生成）")
         while not out_queue.empty():
@@ -499,6 +641,8 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
     ac = _clean_sentence(full_text) or "……"
     if not ac:
         ac = "……"
+    _record_question_ending(ac)
+
 
     try:
         from brain.output_audit import audit_output, pick_safe_reply
