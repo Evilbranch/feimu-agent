@@ -24,57 +24,45 @@ CURIOSITY_LOW = 0.2           # 低于此值 → 禁止 explore
 
 
 def gate():
-    """返回 (allow_speak, allow_explore, next_wake_mult, reason)
+    """返回 (allow_speak, allow_explore, reason)
 
-    allow_speak: 是否允许 speak
-    allow_explore: 是否允许 explore
-    next_wake_mult: next_wake 的倍数（<1 更快醒，>1 更慢）
-    reason: 简短的原因描述
+    只做"允许/不允许"的硬门控。
+    next_wake 的调制由 drive_modifier() 独立负责。
     """
     try:
         st = P.get_current_state()
     except Exception as e:
         print(f"[状态门控] 读取失败: {e}")
-        return True, True, 1.0, "读取失败，默认放行"
+        return True, True, "读取失败，默认放行"
 
     e = st.get("emotion", {})
     d = st.get("drives", {})
     v = float(e.get("valence", 0.0))
-    a = float(e.get("arousal", 0.4))
     conn = float(d.get("connection", 0.5))
     cur = float(d.get("curiosity", 0.5))
 
     allow_speak = True
     allow_explore = True
-    mult = 1.0
     reasons = []
 
     # ═══ 情绪门 ═══
     if v < VALENCE_SPEAK_MIN:
         allow_speak = False
-        mult *= 1.5
         reasons.append(f"情绪低({v:.2f})不说")
     if v < VALENCE_EXPLORE_MIN:
         allow_explore = False
-        mult *= 1.3
         reasons.append(f"没心情探索({v:.2f})")
-    if a > AROUSAL_HIGH:
-        mult *= 0.7
-        reasons.append(f"激动({a:.2f})醒快点")
 
     # ═══ 驱力门 ═══
     if conn < CONNECTION_LOW:
         allow_speak = False
         reasons.append(f"连接欲低({conn:.2f})")
-    if conn > CONNECTION_HIGH:
-        mult *= 0.5
-        reasons.append(f"很想哥哥({conn:.2f})")
     if cur < CURIOSITY_LOW:
         allow_explore = False
         reasons.append(f"好奇心低({cur:.2f})")
 
     reason = "; ".join(reasons) if reasons else "状态正常，放行"
-    return allow_speak, allow_explore, mult, reason
+    return allow_speak, allow_explore, reason
 
 
 def describe_state():
@@ -121,3 +109,85 @@ def describe_state():
         parts.append("脑子懒懒的，不太想动")
 
     return "。".join(parts) + "。"
+
+# ══════════════════════════════════════════════════════
+# 质变点 1 Stage 3：驱力驱动 next_wake
+# ══════════════════════════════════════════════════════
+def _map_connection(c):
+    """connection 映射：越高 → 醒越频繁"""
+    if c >= 0.85:  return 0.4
+    if c >= 0.70:  return 0.6
+    if c >= 0.50:  return 0.85
+    if c >= 0.30:  return 1.0
+    if c >= 0.15:  return 1.2
+    return 1.5
+
+
+def _map_curiosity(c):
+    """curiosity 映射：越高 → 探索越多 → 醒越频繁"""
+    if c >= 0.80:  return 0.5
+    if c >= 0.65:  return 0.7
+    if c >= 0.45:  return 0.9
+    if c >= 0.30:  return 1.0
+    if c >= 0.15:  return 1.2
+    return 1.4
+
+
+def _map_valence(v):
+    """valence 映射：负面 → 醒得慢（不想动）"""
+    if v >= 0.60:   return 0.85
+    if v >= 0.30:   return 0.95
+    if v >= -0.10:  return 1.0
+    if v >= -0.30:  return 1.2
+    if v >= -0.50:  return 1.5
+    return 1.8
+
+
+def _map_arousal(a):
+    """arousal 映射：激动 → 节奏加快"""
+    if a >= 0.70:   return 0.7
+    if a >= 0.55:   return 0.85
+    if a >= 0.35:   return 1.0
+    if a >= 0.20:   return 1.1
+    return 1.2
+
+
+def drive_modifier():
+    """驱力/情绪综合产生的 next_wake 调制倍数
+
+    返回 (multiplier, reason)
+    - < 1.0 → 醒得更频繁
+    - > 1.0 → 醒得更慢
+    - clamp 到 [0.4, 2.0]
+
+    设计原则：
+    - 每个维度独立映射
+    - 平均值综合（避免任何单一驱力过度主导）
+    - 只做"调制"，不替换 LLM 的决定
+    """
+    try:
+        st = P.get_current_state()
+    except Exception as e:
+        return 1.0, f"读取失败({e})"
+
+    d = st.get("drives", {})
+    e = st.get("emotion", {})
+
+    conn = float(d.get("connection", 0.5))
+    cur = float(d.get("curiosity", 0.5))
+    v = float(e.get("valence", 0.2))
+    a = float(e.get("arousal", 0.4))
+
+    m_conn = _map_connection(conn)
+    m_cur = _map_curiosity(cur)
+    m_v = _map_valence(v)
+    m_a = _map_arousal(a)
+
+    mult = (m_conn + m_cur + m_v + m_a) / 4.0
+    mult = max(0.4, min(2.0, mult))
+
+    reason = (
+        f"conn×{m_conn:.2f} cur×{m_cur:.2f} "
+        f"v×{m_v:.2f} a×{m_a:.2f}"
+    )
+    return mult, reason

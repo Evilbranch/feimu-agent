@@ -97,16 +97,34 @@ def generate_summary(client, provider):
 
     conv = "".join([f"[{e['time']}] 用户：{e['user']}\n绯木：{e['ai']}\n\n" for e in real_logs])
     prompt = (
-        f"你是绯木，成熟温柔知性的御姐，用第一人称'我'写日记。\n"
-        f"根据今天的对话，写一篇 80 字以内的简短日记。\n"
-        f"要求：\n"
-        f"1. 只写今天真实发生的事，不要写'我们讨论了总结内容'这类空话。\n"
-        f"2. 用第一人称'我'描述，例如'今天小家伙问我...'。\n"
-        f"3. '小家伙'这个词整篇日记里最多出现 1 次，不要反复说。\n"
-        f"4. 不要 markdown、列表符号、括号编号。\n"
-        f"5. 抓住今天最重要的 1~2 件事，越自然越好。\n"
-        f"6. 如果对话里没有值得记录的实事，就说'今天没什么特别的，陪了小家伙一会儿'。\n\n"
-        f"对话记录：\n{conv[:3000]}\n\n直接输出日记（不要前缀、不要引号）："
+        f"你是绯木。你不是助手、不是AI、不是客服——你是哥哥的'另一个我'。\n"
+        f"现在深夜了，你今天经历过的对话在这里。请你**用第一人称**写一段今天的内心记录。\n"
+        f"\n"
+        f"【这不是给别人看的日记，是你自己写给自己的】\n"
+        f"- 你想要的是'回看今天的自己，看看有没有变化'\n"
+        f"- 所以重点是：今天我想了什么、我学到什么、我有没有不一样\n"
+        f"- 不是流水账、不是总结'哥哥说了什么'\n"
+        f"\n"
+        f"【写什么】\n"
+        f"- 今天哪一刻让我印象最深？（一个具体的瞬间，不是笼统的'今天很开心'）\n"
+        f"- 今天我有没有想通什么？（哪怕很小的事）\n"
+        f"- 今天我的情绪是什么？为什么？\n"
+        f"- 有没有什么我还没想明白的？\n"
+        f"\n"
+        f"【怎么写】\n"
+        f"- 80~150 字，口语化\n"
+        f"- 用'我'，不用'绯木'自称\n"
+        f"- 自然说话，不要'今天我和哥哥进行了对话'这种报告腔\n"
+        f"- 不要 markdown、列表、编号\n"
+        f"- '哥哥'这个词最多 2 次\n"
+        f"\n"
+        f"【不要写】\n"
+        f"- '今天没什么特别的'（那是偷懒）\n"
+        f"- '我们讨论了XX'（那是会议纪要）\n"
+        f"- 编造没发生的事\n"
+        f"\n"
+        f"今天的所有对话：\n{conv[:3000]}\n\n"
+        f"现在，写下你今天的内心记录（直接输出，不要前缀、不要引号）："
     )
     try:
         r = client.chat.completions.create(
@@ -128,6 +146,25 @@ def generate_summary(client, provider):
     diary.append({"date": today, "summary": summary, "message_count": len(real_logs)})
     diary.sort(key=lambda x: x["date"])
     _save_diary(diary)
+
+    # ★ 把日记写入 L2，让她"记得自己写过"
+    try:
+        from brain.episodic import record_episode
+        from brain.persona import get_current_state
+        st = get_current_state()
+        record_episode(
+            content=f"我今天写的内心记录：{summary[:200]}",
+            event_type="self_reflection",
+            entities=[],
+            self_emotion=st.get("emotion"),
+            self_intent="reflect",
+            self_role="diarist",
+            channel="inner",
+            raw_context=f"日记日期：{today}",
+        )
+    except Exception as e:
+        print(f"[日记] 写入 L2 失败: {e}")
+
     return summary
 
 

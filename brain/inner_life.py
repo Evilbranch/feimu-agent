@@ -67,6 +67,12 @@ def get_inner_log(limit=10):
     return _load_log()[-limit:]
 
 
+# ==================== 深夜判定 ====================
+def _is_night():
+    """判断现在是深夜时段（23:00~07:00）"""
+    h = time.localtime().tm_hour
+    return h >= NIGHT_START or h < NIGHT_END
+
 # ==================== 时段意识 ====================
 def _time_theme():
     """根据当前时间给一句提示，让她参考，不强制"""
@@ -513,7 +519,54 @@ def _is_fabricated(content):
             return True
     return False
 
+# ==================== 当晚整理 ====================
+_night_consolidate_date = [None]   # 记录今晚是否已整理
 
+
+def _maybe_night_consolidate(client, provider):
+    """当晚整理：每天深夜执行一次
+
+    做的事：
+    1. 读取今天全天的 L2 情景记忆
+    2. LLM 抽象出"关于哥哥的稳定事实"
+    3. 写入 L1 语义记忆
+    4. 标记 L2 已巩固
+    5. 记录整理日志
+
+    每个自然日只跑一次（_night_consolidate_date 防重）。
+    """
+    today = time.strftime("%Y-%m-%d")
+    if _night_consolidate_date[0] == today:
+        return
+    _night_consolidate_date[0] = today
+
+    print(f"\n[当晚整理] ========== {today} 开始 ==========")
+
+    try:
+        import datetime as _dt
+        from brain.consolidate import consolidate_once
+
+        # 计算今天 0 点的时间戳
+        _today_start = _dt.datetime.now().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).timestamp()
+
+        print(f"[当晚整理] 处理今天全天的情景记忆...")
+        consolidate_once(client, provider, since=_today_start)
+
+        # ★ 生成今天的"内心记录"
+        try:
+            from tools.diary import generate_summary
+            print(f"[当晚整理] 生成内心记录...")
+            _summary = generate_summary(client, provider)
+            print(f"[当晚整理] 内心记录: {_summary[:60]}...")
+        except Exception as e:
+            print(f"[当晚整理] 生成日记失败: {e}")
+
+        print(f"[当晚整理] ========== 完成 ==========\n")
+
+    except Exception as e:
+        print(f"[当晚整理] 异常: {e}")
 # ==================== explore ====================
 def _do_explore(content, client, provider, force=False):
     """搜索 + 内化 + 写入 L1/L0/L2
@@ -670,7 +723,33 @@ def inner_life_loop(client, provider):
             if not getattr(s, "inner_life_enabled", True):
                 next_wake_at = now + 600
                 continue
+            # ══════════════════════════════════════════════════
+            # 深夜守卫（23:00~07:00）
+            # ══════════════════════════════════════════════════
+            _night = _is_night()
+            _last_interaction = getattr(s, "last_interaction_time", 0)
+            _user_active = (
+                (_last_interaction > _loop_start) and
+                (now - _last_interaction < IDLE_THRESHOLD)
+            )
 
+            if _night and not _user_active:
+                # 用户不在 → 只做当晚整理 + 休眠
+                # 只在 23:00~24:00 之间打印一次日志，避免刷屏
+                h = time.localtime().tm_hour
+                if h == NIGHT_START:
+                    print(
+                        f"[深夜] {time.strftime('%H:%M')} 进入休眠"
+                        f"（用户离线 {int((now - _last_interaction) / 60)} 分钟）"
+                    )
+                # ★ 当晚整理
+                _maybe_night_consolidate(client, provider)
+                # 每小时醒一次检查是否白天
+                next_wake_at = now + 3600
+                continue
+
+            # 用户在线但深夜 → 允许对话，但下游禁 explore
+            # （通过 _night 变量传给下游）
             # ══════════════════════════════════════════════════
             # 认知任务检查：独立调度，不受用户在线影响
             # ══════════════════════════════════════════════════
@@ -861,7 +940,7 @@ def inner_life_loop(client, provider):
             # ══════════════════════════════════════════════════════
             try:
                 from brain.state_gate import gate
-                _allow_speak, _allow_explore, _mult, _gate_reason = gate()
+                _allow_speak, _allow_explore, _gate_reason = gate()
 
                 if final_intent == "speak" and not _allow_speak:
                     print(f"[状态门控] 阻止 speak: {_gate_reason}")
@@ -871,16 +950,31 @@ def inner_life_loop(client, provider):
                     print(f"[状态门控] 阻止 explore: {_gate_reason}")
                     final_intent = "idle"
                     final_reason = f"状态门控：{_gate_reason}"
-
-                if abs(_mult - 1.0) > 1e-3:
-                    next_wake = int(next_wake * _mult)
-                    print(
-                        f"[状态门控] next_wake ×{_mult:.2f} → "
-                        f"{_format_wake_time(next_wake)} ({_gate_reason})"
-                    )
             except Exception as e:
                 print(f"[状态门控] 异常: {e}")
 
+            # ══════════════════════════════════════════════════════
+            # 质变点 1 Stage 3：驱力驱动 next_wake
+            # ══════════════════════════════════════════════════════
+            try:
+                from brain.state_gate import drive_modifier
+                _mult, _drv_reason = drive_modifier()
+                if abs(_mult - 1.0) > 0.05:
+                    _old_wake = next_wake
+                    next_wake = int(next_wake * _mult)
+                    next_wake = max(MIN_WAKE, min(MAX_WAKE, next_wake))
+                    print(
+                        f"[驱力调制] next_wake ×{_mult:.2f}: "
+                        f"{_format_wake_time(_old_wake)} → "
+                        f"{_format_wake_time(next_wake)} ({_drv_reason})"
+                    )
+            except Exception as e:
+                print(f"[驱力调制] 异常: {e}")
+            # ★ 深夜守卫：禁 explore
+            if _night and final_intent == "explore":
+                print(f"[深夜守卫] 阻止 explore")
+                final_intent = "idle"
+                final_reason = "深夜不探索"
             wake_str = _format_wake_time(next_wake)
             print(f"[内在] intent={final_intent} reason={final_reason} | "
                   f"next_wake={wake_str} ({wake_reason})")

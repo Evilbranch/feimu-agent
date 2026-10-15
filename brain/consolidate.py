@@ -72,10 +72,14 @@ def _mark_consolidated(ids):
     mark_consolidated(ids)
 
 
-def consolidate_once(client, provider):
-    """跑一次巩固"""
-    last_ts = _load_last_ts()
-    since = max(last_ts, time.time() - 86400)  # 最多回看 24 小时
+def consolidate_once(client, provider, since=None):
+    """跑一次巩固
+
+    since: 显式指定起始时间戳（None 时用默认逻辑）
+    """
+    if since is None:
+        last_ts = _load_last_ts()
+        since = max(last_ts, time.time() - 86400)  # 最多回看 24 小时
 
     episodes = _load_episodes_since(since)
     if len(episodes) < 3:

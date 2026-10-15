@@ -1415,6 +1415,12 @@ def main():
                         _rep = _m["content"].strip()
                         break
                 _fh_append(ui, _rep, source=current_source)
+
+                # ★ 写入今天的对话日志（供当晚整理生成日记）
+                try:
+                    diary_append(ui, _rep)
+                except Exception as e:
+                    print(f"[diary] 写入失败: {e}")
             except Exception as e:
                 print(f"[full_history] 异常: {e}")
 
