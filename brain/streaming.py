@@ -177,39 +177,49 @@ def _build_l0_prompt(l0_ctx):
 def _build_open_questions_prompt(matched_questions):
     """根据命中的 open_questions 生成 prompt 片段
 
-    强约束：必须原样引用注入的问句，不许自己编。
+    约束：把心事用口语说出来，意思一致，措辞可以改。
     """
     if not matched_questions:
         return ""
 
-    # 只取分最高的那条（多条会让她混乱）
     q = matched_questions[0]
     q_text = q.get("question", "")
     refs = q.get("refs", 0)
 
-    if refs >= 2:
-        ref_desc = f'（"我心里挂了好几天了"的力度）'
+    if refs >= 4:
+        ref_desc = "你心里挂了好几天了，有点念念不忘"
+    elif refs >= 2:
+        ref_desc = "你之前想过几次，一直没想清"
     else:
-        ref_desc = f'（"刚想起来"的力度）'
+        ref_desc = "你最近刚冒出来这个念头"
 
     lines = [
-        "\n\n【你必须在这一轮提到这件事】",
-        f"\n系统判断这次对话和下面这条**未解的心事**相关：",
-        f'\n  【{q_text}】',
-        f"\n力度：{ref_desc}",
-        "\n\n【如何提】",
-        "\n1. 先正常回答用户当前问题（1~2 句）",
+        "\n\n【这一轮你要带出一件心事】",
+        f"\n系统判断这次对话和下面这件事相关：",
+        f'\n  心事：{q_text}',
+        f'\n  感觉：{ref_desc}',
+        "\n\n【怎么带出来】",
+        "\n1. 先正常回答用户当前的问题（1~2 句，说事实或观点）",
         "\n2. 然后用一句话自然过渡，例如：",
         "\n   · '诶，说到这个，我前两天一直在想——'",
         "\n   · '对了，我之前还纠结过一件事——'",
-        "\n3. 然后**原样说出上面方括号里的句子**（可改标点，不能改字）",
+        "\n   · '说起来，我最近总在想——'",
+        "\n3. 然后**用你自己的口语说出这件心事**。",
+        f"\n   关键是：'{q_text}' 的意思必须保留，",
+        "\n   但措辞可以口语化、可以简化、可以重组。",
+        "\n",
+        "\n【口语化示例】",
+        "\n  心事原文：虚拟主播行业的未来方向是什么？",
+        "\n  口语版：虚拟主播以后会怎么走？",
+        "\n  心事原文：我最近对虚拟主播赚钱这件事总是想不清楚，好像缺了什么",
+        "\n  口语版：我老觉得虚拟主播赚钱这事没想透，好像还差点什么",
         "\n",
         "\n【禁止】",
-        "\n- 不许自己编一个新问题替代它",
-        "\n- 不许省略它（除非对话完全不相关——但系统已经判断相关了）",
-        "\n- 不许反复提（这一轮提一次就够）",
-        f"\n\n重复确认：你要说的问句是【{q_text}】，"
-        f"不是别的。",
+        "\n- 不许换一件不相干的心事",
+        "\n- 不许把它变成陈述句（它本质是个问题）",
+        "\n- 不许反复提（这一轮提一次）",
+        "\n- 不许背台词式地原样读出来，要像自己想的",
+        f"\n\n核心语义：{q_text}",
     ]
     return "".join(lines)
 
@@ -230,6 +240,16 @@ def _is_feedback_input():
 # ══════════════════════════════════════════════════════
 # 反问节流：记录最近几轮是否以问句结尾
 # ══════════════════════════════════════════════════════
+# 反问节流兜底句池（避免每次都是同一句）
+_THROTTLE_FALLBACKS = [
+    "嗯，我先说这么多。",
+    "大概就这些。",
+    "嗯……先这样。",
+    "我想到这先停一下。",
+    "嗯，暂时就这些想法。",
+    "差不多就是这些。",
+    "嗯，就先说到这吧。",
+]
 _recent_question_endings = []
 
 
@@ -506,6 +526,7 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
     full_text = ""
     buf = ""
     t0 = time.time()
+    _throttle_yielded = [0]  # ★ 反问节流时，统计已放出的句子数
     _first_checked = [False]
     _interrupted = [False]
     stream = None
@@ -569,6 +590,7 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
                     _first_sent_put[0] = True
                 print(f"[流式] 首句就绪 {time.time()-t0:.2f}s: {cleaned[:30]}")
                 out_queue.put(cleaned)
+                _throttle_yielded[0] += 1
 
             if _interrupted[0]:
                 break
@@ -609,10 +631,12 @@ def ask_ai_streaming(client, provider, history, ui, session_start,
         except Exception:
             pass
 
-    # ★ 反问节流兜底：如果全被拦了，补一句陈述
-    if _throttle_question and out_queue.empty():
-        print("[反问节流] 全部被拦，补兜底陈述")
-        out_queue.put("嗯，我先说这么多。")
+    # ★ 反问节流兜底：本轮一句话都没放出，才补
+    if _throttle_question and _throttle_yielded[0] == 0:
+        import random as _rand
+        _fb = _rand.choice(_THROTTLE_FALLBACKS)
+        print(f"[反问节流] 全部被拦，补兜底陈述: {_fb}")
+        out_queue.put(_fb)
 
     if _interrupted[0]:
         print("[语气守卫] 首句讨好，中断流式，改走非流式路径（含重生成）")

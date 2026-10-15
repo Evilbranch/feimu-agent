@@ -111,10 +111,17 @@ def quick_check(user_msg):
         "reason": "",
     }
 
+    # ═══ 第一关：闲聊/寒暄 ═══
     if _is_chitchat(user_msg):
         result["reason"] = "闲聊/寒暄，不需要搜索"
         return result
 
+    # ═══ 第二关：不是知识性问题 → 不搜 ═══
+    if not _is_knowledge_query(user_msg):
+        result["reason"] = "不是知识性问题，不需要搜索"
+        return result
+
+    # ═══ 第三关：知识性问题 → 查 L0 ═══
     topic, op = _match_l0_topic(user_msg)
     if not op:
         result["verdict"] = "search"
@@ -137,6 +144,97 @@ def quick_check(user_msg):
         result["reason"] = f"L0 confidence 低（{conf:.2f}），直接搜索"
 
     return result
+
+
+# ══════════════════════════════════════════════════════
+# 判断"是不是知识性问题"
+# ══════════════════════════════════════════════════════
+
+# 疑问词（一句话有这些 + 是问句，才可能是知识问题）
+_QUESTION_MARKERS = [
+    "是什么", "什么是", "为什么", "为什么", "怎么样", "怎么", "如何",
+    "哪些", "哪种", "哪个", "什么地方", "什么时间", "多少",
+    "能不能", "可不可以", "是否可以", "是否",
+    "解释一下", "说说看", "讲讲", "介绍一下",
+]
+
+# 第一人称陈述信号（有这些 → 是用户在表达，不是问）
+_FIRST_PERSON_SIGNALS = [
+    "我觉得", "我认为", "我想", "我希望", "我希望你", "我打算",
+    "我喜欢", "我不喜欢", "我想要", "我需要", "我会", "我要",
+    "我的", "我最近", "我打算",
+]
+
+
+def _is_knowledge_query(user_msg):
+    """判断这句话是不是"知识性问题"
+
+    是知识问题：
+    - 有疑问词 + 问号（"虚拟主播怎么赚钱？"）
+    - 命令式查询（"搜一下 X"、"帮我查 X"）
+    - 直接问事实（"X 是什么"）
+
+    不是知识问题：
+    - 第一人称陈述（"我觉得 X"、"我希望 X"）
+    - 相对追问（"未来会有哪些变化"，该继承上一轮）
+    - 表达偏好/建议（"不要给自己太大压力"）
+    - 命令/请求（"帮我打开 X"）
+    - 寒暄/感受（已被 _is_chitchat 拦掉）
+    """
+    if not user_msg:
+        return False
+
+    s = user_msg.strip()
+
+    # ═══ 0. 相对追问（无主语）→ 不是知识问题，该继承上一轮 ═══
+    _RELATIVE_STARTS = (
+        "未来", "长期", "近期", "以后", "接下来", "后面",
+        "他们", "它", "这些", "那些", "这种", "那种",
+    )
+    if any(s.startswith(p) for p in _RELATIVE_STARTS) and len(s) <= 15:
+        return False
+
+    # ═══ 1. 第一人称陈述 → 不是知识问题 ═══
+    for sig in _FIRST_PERSON_SIGNALS:
+        if sig in s:
+            return False
+
+    # ═══ 2. "我希望你..." / "让你..." ═══
+    if s.startswith(("我希望", "想让你", "要你", "让你")):
+        return False
+
+    # ═══ 3. "不要..." / "别..." ═══
+    if s.startswith(("不要", "别", "不需要")):
+        return False
+
+    # ═══ 4. 短句（< 8 字）→ 不是知识问题 ═══
+    if len(s) < 8:
+        return False
+
+    # ═══ 5. 疑问标记 ═══
+    has_qmark = ("?" in s) or ("？" in s)
+    has_qword = any(w in s for w in _QUESTION_MARKERS)
+
+    if has_qmark and has_qword:
+        return True
+
+    if has_qword and len(s) <= 20:
+        if not any(sig in s for sig in _FIRST_PERSON_SIGNALS):
+            return True
+
+    # ═══ 6. 命令式查询 ═══
+    _SEARCH_CMDS = ["搜一下", "搜一搜", "查一下", "查查", "帮我查",
+                    "搜索一下", "帮我搜", "找一下"]
+    for cmd in _SEARCH_CMDS:
+        if cmd in s:
+            return True
+
+    # ═══ 7. 直接问事实 ═══
+    if "是什么" in s or "什么是" in s:
+        return True
+
+    # ═══ 8. 其他 → 保守判断 ═══
+    return False
 
 
 _JUDGE_SYSTEM = """你是绯木的决策助手。

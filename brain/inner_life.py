@@ -112,6 +112,11 @@ def _format_wake_time(seconds):
 
 def _build_context(s, history):
     st = P.get_current_state()
+    try:
+        from brain.state_gate import describe_state
+        _state_feel = describe_state() or "（说不上来的平静）"
+    except Exception:
+        _state_feel = "（说不上来的平静）"
     d = st["drives"]
     e = st["emotion"]
     now = time.time()
@@ -202,12 +207,9 @@ def _build_context(s, history):
 【距离上次互动】{elapsed_min} 分钟（{time_hint}）
 【距离上次主动说话】{last_speak_str}
 
-【我的内在状态】
-- 连接欲：{d['connection']:.2f}（> 0.5 说明比较想哥哥）
-- 安全感：{d['security']:.2f}
-- 好奇心：{d['curiosity']:.2f}
-- 表达欲：{d['expression']:.2f}
-- 情绪：{e['label']}（v={e['valence']:.2f}）
+【此刻的我】
+{_state_feel}
+（原始数据：v={e['valence']:.2f} a={e['arousal']:.2f} conn={d['connection']:.2f} cur={d['curiosity']:.2f}）
 
 【最近真实对话】
 {recent}
@@ -653,6 +655,8 @@ def inner_life_loop(client, provider):
     _loop_start = time.time()
 
     next_wake_at = time.time() + CHECK_INTERVAL
+    # ★ 认知任务独立调度器：不受 next_wake_at / IDLE_THRESHOLD 影响
+    _next_cog_at = [time.time() + CHECK_INTERVAL]
     print(f"[内在] 自唤醒循环已启动，首次唤醒 {_format_wake_time(CHECK_INTERVAL)} 后")
 
     while not s.shutdown_flag.is_set():
@@ -667,9 +671,47 @@ def inner_life_loop(client, provider):
                 next_wake_at = now + 600
                 continue
 
-            # ★ 启动后 10 分钟豁免：启动时 last_interaction_time 被设为启动时间，
-            #   会导致 IDLE_THRESHOLD 反复推迟首次唤醒。改成"只有启动后真的
-            #   有过交互，才走 IDLE_THRESHOLD 检查"
+            # ══════════════════════════════════════════════════
+            # 认知任务检查：独立调度，不受用户在线影响
+            # ══════════════════════════════════════════════════
+            if now >= _next_cog_at[0]:
+                _cog_route = None
+                try:
+                    from brain.cognitive_orchestrator import CognitiveOrchestrator
+                    _orch = CognitiveOrchestrator()
+                    _cog_route = _orch.route()
+                except Exception as e:
+                    print(f"[编排] 路由失败: {e}")
+
+                if _cog_route and _cog_route.get("task_type") != "normal":
+                    # 有认知任务 → 立刻执行，不管用户是否在线
+                    try:
+                        from brain.cognitive_orchestrator import CognitiveOrchestrator
+                        _orch = CognitiveOrchestrator()
+                        print(f"[编排] {_cog_route['task_type']} | {_cog_route['reason']}")
+                        _ok = _orch.execute(_cog_route, client, provider)
+                        _append_log({
+                            "ts": now,
+                            "intent": _cog_route["task_type"],
+                            "content": _cog_route.get("payload", {}).get("topic", ""),
+                            "reason": _cog_route["reason"][:100],
+                            "elapsed_min": int(
+                                (now - getattr(s, "last_interaction_time", 0)) / 60
+                            ),
+                            "next_wake": _cog_route.get("next_wake", 1800),
+                            "wake_reason": "认知任务完成" if _ok else "认知任务失败",
+                        })
+                        _next_cog_at[0] = now + _cog_route.get("next_wake", 1800)
+                    except Exception as e:
+                        print(f"[编排] 异常: {e}")
+                        _next_cog_at[0] = now + 300
+                else:
+                    # 无任务 → 60 秒后再检查
+                    _next_cog_at[0] = now + 60
+
+            # ══════════════════════════════════════════════════
+            # 无认知任务 → 走 IDLE_THRESHOLD（用户在线时不打扰）
+            # ══════════════════════════════════════════════════
             _last_interaction = getattr(s, "last_interaction_time", 0)
             _has_real_interaction = _last_interaction > _loop_start
             if _has_real_interaction and (now - _last_interaction < IDLE_THRESHOLD):
@@ -686,31 +728,7 @@ def inner_life_loop(client, provider):
             history = load_history(slot="owner")
             ctx = _build_context(s, history)
 
-            # ═════════════════════════════════════════
-            # 认知编排器：优先处理明确的认知任务
-            # ═════════════════════════════════════════
-            try:
-                from brain.cognitive_orchestrator import CognitiveOrchestrator
-                orch = CognitiveOrchestrator()
-                route = orch.route()
-                if route["task_type"] != "normal":
-                    print(f"[编排] {route['task_type']} | {route['reason']}")
-                    ok = orch.execute(route, client, provider)
-                    _append_log({
-                        "ts": now,
-                        "intent": route["task_type"],
-                        "content": route.get("payload", {}).get("topic", ""),
-                        "reason": route["reason"][:100],
-                        "elapsed_min": int(
-                            (now - getattr(s, "last_interaction_time", 0)) / 60
-                        ),
-                        "next_wake": route.get("next_wake", 1800),
-                        "wake_reason": "认知任务完成" if ok else "认知任务失败",
-                    })
-                    next_wake_at = time.time() + route.get("next_wake", 1800)
-                    continue
-            except Exception as e:
-                print(f"[编排] 异常: {e}")
+
 
             decision = _ask_intent(client, provider, ctx)
             if not decision:
@@ -837,6 +855,31 @@ def inner_life_loop(client, provider):
                     elif not content:
                         final_intent = "idle"
                         final_reason = "内容为空"
+
+            # ══════════════════════════════════════════════════════
+            # 质变点 1：状态门控
+            # ══════════════════════════════════════════════════════
+            try:
+                from brain.state_gate import gate
+                _allow_speak, _allow_explore, _mult, _gate_reason = gate()
+
+                if final_intent == "speak" and not _allow_speak:
+                    print(f"[状态门控] 阻止 speak: {_gate_reason}")
+                    final_intent = "idle"
+                    final_reason = f"状态门控：{_gate_reason}"
+                elif final_intent == "explore" and not _allow_explore:
+                    print(f"[状态门控] 阻止 explore: {_gate_reason}")
+                    final_intent = "idle"
+                    final_reason = f"状态门控：{_gate_reason}"
+
+                if abs(_mult - 1.0) > 1e-3:
+                    next_wake = int(next_wake * _mult)
+                    print(
+                        f"[状态门控] next_wake ×{_mult:.2f} → "
+                        f"{_format_wake_time(next_wake)} ({_gate_reason})"
+                    )
+            except Exception as e:
+                print(f"[状态门控] 异常: {e}")
 
             wake_str = _format_wake_time(next_wake)
             print(f"[内在] intent={final_intent} reason={final_reason} | "

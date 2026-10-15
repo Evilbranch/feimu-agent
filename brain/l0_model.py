@@ -128,17 +128,38 @@ _TOPIC_FILLERS = [
 _TOPIC_TAIL_CHARS = "？?！!。.，,、；;：: \t\n\"'「」『』"
 
 
+# 问句尾巴：清 topic 时去掉
+_TOPIC_QUESTION_TAILS = [
+    "是什么样的", "是怎么样的", "应该是怎么样的", "应该是什么样的",
+    "需要具备哪些特征", "需要哪些特征", "具备哪些特征", "有哪些特征",
+    "会怎么样", "会是怎样", "是怎样的",
+    "是什么", "有哪些", "有什么", "为什么", "怎么做", "怎么", "如何",
+    "能否与真人主播竞争", "能否与真人竞争", "是否能与真人竞争",
+    "能否在情感连接和真实性方面与真人主播竞争",
+    "能否", "是否能", "是否",
+]
+
+
 def clean_topic(topic):
-    """清洗 topic：去前缀、去尾部标点"""
     if not topic:
         return ""
     s = (topic or "").strip()
     s = s.rstrip(_TOPIC_TAIL_CHARS)
+
+    # 去前缀
     for p in _TOPIC_PREFIXES:
         if s.startswith(p):
             s = s[len(p):].strip()
             s = s.rstrip(_TOPIC_TAIL_CHARS)
             break
+
+    # 去问句尾巴
+    for tail in _TOPIC_QUESTION_TAILS:
+        if s.endswith(tail):
+            s = s[: -len(tail)].strip()
+            s = s.rstrip(_TOPIC_TAIL_CHARS)
+            break
+
     return s
 
 
@@ -630,6 +651,18 @@ def _oq_core_chars(text):
         return set()
     return set(c for c in text if c not in _OQ_STOPCHARS and c.strip())
 
+# ══════════════════════════════════════════════════════
+# open_question 提起冷却
+# ══════════════════════════════════════════════════════
+_oq_cooldown = {}   # {qid: remaining_rounds}
+
+
+def _decay_oq_cooldown():
+    """每轮对话递减冷却计数"""
+    for qid in list(_oq_cooldown.keys()):
+        _oq_cooldown[qid] -= 1
+        if _oq_cooldown[qid] <= 0:
+            del _oq_cooldown[qid]
 
 def find_relevant_open_questions(user_msg, top_k=2, min_score=0.3):
     """从 open_questions 里找和当前消息相关的
@@ -676,7 +709,8 @@ def find_relevant_open_questions(user_msg, top_k=2, min_score=0.3):
                 "score": round(score, 3),
                 "refs": int(q.get("refs", 0)),
             })
-
+    # ★ 过滤掉正在冷却的
+    scored = [s for s in scored if s["id"] not in _oq_cooldown]
     scored.sort(key=lambda x: -x["score"])
     return scored[:top_k]
 
@@ -703,5 +737,7 @@ def touch_open_question(qid, note=""):
                     )
                 save_self_model(m, snapshot=False)
                 print(f"[L0] touch open_question: {qid} refs={q['refs']}")
+                # ★ 每次被想起来后，进入 3 轮冷却
+                _oq_cooldown[qid] = 3
                 return True
         return False

@@ -165,7 +165,7 @@ _DRIVE_IMPACTS = {
     "share_good": {"connection": -0.03, "curiosity": +0.04, "validation": -0.03},
     "share_bad":  {"connection": +0.02, "security": -0.04, "expression": +0.04},
     "bored":      {"connection": +0.15, "validation": +0.08, "curiosity": -0.04},
-    "chat":       {"connection": -0.008, "curiosity": -0.01},
+    "chat":       {"connection": -0.008, "curiosity": -0.002},
     "longing":    {"connection": +0.12, "expression": +0.08},
     "asked_love": {"connection": +0.03, "security": -0.04},
     "apology":    {"connection": +0.08, "security": +0.10, "validation": +0.05},
@@ -661,22 +661,60 @@ def apply_reflection(changes, mode=None):
 
 
 def _drives_drift():
+    """驱力随时间向基准漂移
+
+    设计原则：
+    - 每个驱力有"自己的基准"
+    - 距离基准越远，回归越快（比例回归）
+    - connection 特殊：有交互时回落，无交互时增长
+    """
     from core import state as _state
     s = _state.get_state()
 
     now = time.time()
-    if now - getattr(s, "last_interaction_time", 0) < 180:
-        return
+    last_gap = now - getattr(s, "last_interaction_time", 0)
+    # 5 分钟内有交互 → 视为"被满足"
+    has_recent = last_gap < 300
 
     with _lock:
         data = _load()
         for m in ("master", "audience"):
             d = data[m]["drives"]
-            d["connection"] = min(1.0, d["connection"] + 0.015)
-            if d["security"] < 0.6:
-                d["security"] = min(1.0, d["security"] + 0.003)
-            d["expression"] = min(1.0, d["expression"] + 0.002)
+
+            # ══════════════════════════════════════════════════
+            # connection：特殊处理
+            # ══════════════════════════════════════════════════
+            if has_recent:
+                # 有交互 → 向基准 0.4 回落（被满足）
+                d["connection"] = _drift(d["connection"], 0.4, 0.04)
+            else:
+                # 无交互 → 向 0.95 增长（越久没见越想）
+                d["connection"] = _drift(d["connection"], 0.95, 0.02)
+
+            # ══════════════════════════════════════════════════
+            # 其他驱力：恒定向基准漂移
+            # ══════════════════════════════════════════════════
+            d["security"]   = _drift(d["security"],   0.7,  0.02)
+            d["curiosity"]  = _drift(d["curiosity"],  0.5,  0.04)
+            d["expression"] = _drift(d["expression"], 0.4,  0.03)
+            d["validation"] = _drift(d["validation"], 0.5,  0.025)
+
         _save(data)
+
+
+def _drift(current, baseline, rate):
+    """向基准漂移（不会越界）
+
+    公式：new = current + (baseline - current) * rate
+    """
+    try:
+        cur = float(current)
+        base = float(baseline)
+        r = float(rate)
+    except Exception:
+        return current
+    new = cur + (base - cur) * r
+    return max(0.0, min(1.0, new))
 
 
 def _emotion_recovery():
