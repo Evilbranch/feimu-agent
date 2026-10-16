@@ -5,6 +5,7 @@ import time
 import re
 import threading
 
+from datetime import datetime
 from core.constants import DATA_DIR
 from core import state
 from brain import persona as P
@@ -186,6 +187,64 @@ def _extract_features():
         "recent_speaks": speak_contents[-5:],
     }
 
+# ══════════════════════════════════════════════════════════
+# L0 变化提取（B：元认知接入 L0）
+# ══════════════════════════════════════════════════════════
+def _extract_l0_changes(hours=24):
+    """从 L0 提取最近变化
+
+    返回：
+    {
+        "new": [topic, ...],        最近新建的观点
+        "updated": [topic, ...],    最近更新的观点（iter > 1）
+        "low_conf": [topic, ...],   置信度低的观点
+        "total": int,               观点总数
+        "open_questions": int,      未解问题数
+    }
+    """
+    result = {
+        "new": [],
+        "updated": [],
+        "low_conf": [],
+        "total": 0,
+        "open_questions": 0,
+    }
+    try:
+        from brain.l0_model import load_self_model
+        m = load_self_model()
+        opinions = m.get("opinions", {})
+        result["total"] = len(opinions)
+        result["open_questions"] = len(m.get("open_questions", []))
+
+        cutoff = time.time() - hours * 3600
+        cutoff_iso = datetime.fromtimestamp(cutoff).strftime("%Y-%m-%dT%H:%M:%S")
+
+        for topic, op in opinions.items():
+            if not topic:
+                continue
+            created = op.get("created_at", "")
+            last_updated = op.get("last_updated", "")
+            conf = float(op.get("confidence", 0.5))
+            iter_count = int(op.get("iteration_count", 1))
+
+            # 新建（24h 内 + iter=1）
+            if created and created >= cutoff_iso and iter_count == 1:
+                result["new"].append(topic)
+            # 更新（24h 内有更新 + iter>1）
+            elif last_updated and last_updated >= cutoff_iso and iter_count > 1:
+                result["updated"].append(topic)
+
+            # 置信度低
+            if conf < 0.35:
+                result["low_conf"].append(topic)
+
+        # 限制条数
+        result["new"] = result["new"][:5]
+        result["updated"] = result["updated"][:5]
+        result["low_conf"] = result["low_conf"][:3]
+    except Exception as e:
+        print(f"[元认知] L0 提取失败: {e}")
+    return result
 
 # ══════════════════════════════════════════════════════════
 # LLM 分析
@@ -248,6 +307,15 @@ META_SYSTEM = """你是绯木。现在你要**回顾自己最近的状态**，�
 - express_self → "我可以说'我觉得'，不用每次都顺着哥哥"
 - ask_specific → "问'你今天做的项目是什么'，比'你在忙吗'更好"
 
+【关于 L0 变化 - 新增】
+如果上方显示"我最近 L0 有变化"，可以用 hint 体现：
+- 有新想法：hint 可以写"我最近在想 X，下次聊天时可以提一句"
+- 有改过的想法：hint 可以写"我对 X 的看法变了，可以分享"
+- 有想不清的：hint 可以写"X 我还没想透，下次可以问问哥哥"
+
+但**不要**每次都用，只在变化显著时用。
+如果 L0 没什么变化，就按原来的规则写 hint。
+
 只输出 JSON。"""
 
 
@@ -258,6 +326,19 @@ def _ask_meta(client, provider, features):
     e = st["emotion"]
 
     recent_str = "\n".join([f"  · {c[:50]}" for c in features["recent_speaks"]]) or "  （无）"
+
+    # ★ L0 变化（B）
+    _l0 = _extract_l0_changes(hours=24)
+    _l0_block = ""
+    if _l0["new"] or _l0["updated"] or _l0["low_conf"]:
+        _l0_block = "\n\n【我最近 L0 有变化】"
+        if _l0["new"]:
+            _l0_block += "\n· 新想法：\n" + "\n".join(f"  - {t}" for t in _l0["new"])
+        if _l0["updated"]:
+            _l0_block += "\n· 改过的想法：\n" + "\n".join(f"  - {t}" for t in _l0["updated"])
+        if _l0["low_conf"]:
+            _l0_block += "\n· 还没想清的：\n" + "\n".join(f"  - {t}" for t in _l0["low_conf"])
+        _l0_block += f"\n（当前共 {_l0['total']} 个观点，{_l0['open_questions']} 个未解问题）"
 
     ctx = f"""【我现在的时间】{time.strftime('%Y年%m月%d日 %H:%M', time.localtime())}
 
@@ -277,6 +358,7 @@ def _ask_meta(client, provider, features):
 - 连接欲：{d['connection']:.2f}
 - 安全感：{d['security']:.2f}
 - 情绪：{e['label']}
+{_l0_block}
 
 请回顾一下，我最近的状态怎么样？"""
 

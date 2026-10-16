@@ -566,6 +566,14 @@ def _maybe_night_consolidate(client, provider):
         except Exception as e:
             print(f"[当晚整理] 生成日记失败: {e}")
 
+        # ★ 每周深反思（距上次 > 7 天）
+        try:
+            from brain.deep_reflect import deep_reflect_once
+            print(f"[当晚整理] 检查周度深反思...")
+            deep_reflect_once(client, provider)
+        except Exception as e:
+            print(f"[当晚整理] 深反思失败: {e}")
+
         print(f"[当晚整理] ========== 完成 ==========\n")
 
     except Exception as e:
