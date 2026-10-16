@@ -7,13 +7,13 @@
 - 证据不足时自动降级 confidence
 """
 import os
+import re
 import json
 import time
 import uuid
 import threading
 from datetime import datetime
 from difflib import SequenceMatcher
-import re
 
 from core.constants import DATA_DIR
 
@@ -104,6 +104,7 @@ def _similarity(a, b):
         return 0.0
     return SequenceMatcher(None, a, b).ratio()
 
+
 # ══════════════════════════════════════════════════════
 # topic 清洗 + 语义去重
 # ══════════════════════════════════════════════════════
@@ -127,20 +128,20 @@ _TOPIC_FILLERS = [
 
 _TOPIC_TAIL_CHARS = "？?！!。.，,、；;：: \t\n\"'「」『』"
 
-
 # 问句尾巴：清 topic 时去掉
 _TOPIC_QUESTION_TAILS = [
     "是什么样的", "是怎么样的", "应该是怎么样的", "应该是什么样的",
     "需要具备哪些特征", "需要哪些特征", "具备哪些特征", "有哪些特征",
-    "会怎么样", "会是怎样", "是怎样的",
-    "是什么", "有哪些", "有什么", "为什么", "怎么做", "怎么", "如何",
     "能否与真人主播竞争", "能否与真人竞争", "是否能与真人竞争",
     "能否在情感连接和真实性方面与真人主播竞争",
     "能否", "是否能", "是否",
+    "会怎么样", "会是怎样", "是怎样的",
+    "是什么", "有哪些", "有什么", "为什么", "怎么做", "怎么", "如何",
 ]
 
 
 def clean_topic(topic):
+    """清洗 topic：去前缀 + 去尾部标点 + 去问句尾巴"""
     if not topic:
         return ""
     s = (topic or "").strip()
@@ -168,7 +169,6 @@ def _topic_core(topic):
     s = clean_topic(topic)
     for f in _TOPIC_FILLERS:
         s = s.replace(f, "")
-    # 去掉残留语气词
     s = s.strip("的了呢嘛呀吧啊")
     return s
 
@@ -190,7 +190,7 @@ def _topic_keywords(topic):
 def _find_similar_topic(new_topic, opinions):
     """在现有 opinions 里找语义相似的 topic
 
-    用字符集 jaccard，阈值 0.8。
+    用字符集 jaccard，阈值 0.7。
     返回 (matched_topic, score) 或 (None, 0.0)
     """
     if not new_topic or not opinions:
@@ -220,6 +220,7 @@ def _find_similar_topic(new_topic, opinions):
     if best[1] >= 0.7:
         return best
     return None, best[1]
+
 
 # ══════════════════════════════════════════════════════
 # self_model.json 读写
@@ -278,7 +279,28 @@ def list_opinions():
 
 def upsert_opinion(topic, new_view, confidence, evidence_ids=None,
                     source="unknown", force=False):
-    ...
+    """更新观点
+
+    返回 (action, opinion)：
+    - "created"：新建
+    - "merged"：与现有观点相似，只提升 confidence
+    - "updated"：加入 history，更新 my_view
+    - "archived"：超过迭代上限，仅存档不更新
+    - "rejected"：参数非法或 source 不在白名单
+    """
+    # ★ source 白名单（为未来弹幕预留）
+    _ALLOWED_SOURCES = (
+        "owner",           # 主人对话触发
+        "internalization", # 内化 Agent
+        "feedback",        # 用户反馈
+        "test",            # 测试
+        "unknown",         # 兼容旧调用
+        "seed",            # 种子数据
+    )
+    if source not in _ALLOWED_SOURCES:
+        print(f"[L0] source 白名单拒绝: {source}")
+        return "rejected", None
+
     if not topic or not new_view:
         return "rejected", None
     evidence_ids = evidence_ids or []
@@ -413,6 +435,76 @@ def rollback(topic, version):
 
 
 # ══════════════════════════════════════════════════════
+# 反馈更新：调整 confidence
+# ══════════════════════════════════════════════════════
+CONF_MIN = 0.1
+CONF_MAX = 0.95
+CONF_LOW_THRESHOLD = 0.3
+
+
+def bump_confidence(topic, delta, reason=""):
+    """调整某个 topic 的 confidence
+
+    delta > 0 → 提升（用户肯定）
+    delta < 0 → 降低（用户否定）
+    范围 [CONF_MIN, CONF_MAX]
+    confidence 低于 CONF_LOW_THRESHOLD 时，加入 open_questions
+    返回 (ok, new_confidence)
+    """
+    if not topic:
+        return False, 0.0
+
+    with _lock:
+        m = load_self_model()
+        opinions = m.get("opinions", {})
+        op = opinions.get(topic)
+        if not op:
+            return False, 0.0
+
+        old_conf = float(op.get("confidence", 0.5))
+        new_conf = max(CONF_MIN, min(CONF_MAX, old_conf + float(delta)))
+        op["confidence"] = round(new_conf, 3)
+        op["last_updated"] = _now_iso()
+
+        # 记录到 history
+        op.setdefault("history", []).append({
+            "version": int(op.get("iteration_count", 1)),
+            "view": op.get("my_view", ""),
+            "confidence": round(new_conf, 3),
+            "ts": _now_iso(),
+            "source": "feedback",
+            "note": f"confidence {old_conf:.2f} -> {new_conf:.2f} ({reason})",
+        })
+
+        # 低置信度 → open_questions
+        if new_conf < CONF_LOW_THRESHOLD:
+            existing_q = [
+                q.get("question", "")
+                for q in m.get("open_questions", [])
+            ]
+            q_text = (
+                f"我对「{topic}」的理解 confidence 很低"
+                f"（{new_conf:.2f}），需要重新确认"
+            )
+            if q_text not in existing_q:
+                m.setdefault("open_questions", []).append({
+                    "id": f"q_{int(time.time() * 1000)}_{uuid.uuid4().hex[:4]}",
+                    "question": q_text,
+                    "status": "exploring",
+                    "related_episodes": [],
+                    "hypotheses": [
+                        f"上次观点：{op.get('my_view', '')[:60]}"
+                    ],
+                    "created_at": _now_iso(),
+                    "last_progress": _now_iso(),
+                })
+
+        save_self_model(m, snapshot=True)
+        print(f"[L0] bump {topic}: {old_conf:.2f} -> {new_conf:.2f} ({reason})")
+        return True, new_conf
+
+
+# ══════════════════════════════════════════════════════
 # open_questions
 # ══════════════════════════════════════════════════════
 def add_open_question(question, related_episodes=None, hypotheses=None):
@@ -457,6 +549,102 @@ def resolve_open_question(qid, resolution=""):
 
 
 # ══════════════════════════════════════════════════════
+# 质变点 3：open_questions 被"想起"
+# ══════════════════════════════════════════════════════
+_OQ_STOPCHARS = set("的了呢嘛呀吧啊是我你他她它们这那什么怎么如何为什么？?！!。.，,、；;：: \t\n\"'「」『』")
+
+# open_question 提起冷却：{qid: remaining_rounds}
+_oq_cooldown = {}
+
+
+def _oq_core_chars(text):
+    """提取文本核心字符（去虚词、去标点）"""
+    if not text:
+        return set()
+    return set(c for c in text if c not in _OQ_STOPCHARS and c.strip())
+
+
+def _decay_oq_cooldown():
+    """每轮对话递减冷却计数"""
+    for qid in list(_oq_cooldown.keys()):
+        _oq_cooldown[qid] -= 1
+        if _oq_cooldown[qid] <= 0:
+            del _oq_cooldown[qid]
+
+
+def find_relevant_open_questions(user_msg, top_k=2, min_score=0.3):
+    """从 open_questions 里找和当前消息相关的
+
+    匹配算法：字符集 jaccard
+    返回：[{"id":..., "question":..., "score":..., "refs":...}, ...]
+    """
+    if not user_msg:
+        return []
+
+    user_chars = _oq_core_chars(user_msg)
+    if not user_chars:
+        return []
+
+    m = load_self_model()
+    questions = m.get("open_questions", [])
+    if not questions:
+        return []
+
+    scored = []
+    for q in questions:
+        if q.get("status") != "exploring":
+            continue
+        q_text = q.get("question", "")
+        if not q_text:
+            continue
+
+        q_chars = _oq_core_chars(q_text)
+        if not q_chars:
+            continue
+
+        inter = len(user_chars & q_chars)
+        union = len(user_chars | q_chars)
+        score = inter / union if union > 0 else 0.0
+
+        if score >= min_score:
+            scored.append({
+                "id": q.get("id"),
+                "question": q_text,
+                "score": round(score, 3),
+                "refs": int(q.get("refs", 0)),
+            })
+
+    # ★ 过滤掉正在冷却的
+    scored = [s for s in scored if s["id"] not in _oq_cooldown]
+
+    scored.sort(key=lambda x: -x["score"])
+    return scored[:top_k]
+
+
+def touch_open_question(qid, note=""):
+    """标记某个 open_question 被"想起来"了一次"""
+    if not qid:
+        return False
+
+    with _lock:
+        m = load_self_model()
+        for q in m.get("open_questions", []):
+            if q.get("id") == qid:
+                q["refs"] = int(q.get("refs", 0)) + 1
+                q["last_progress"] = _now_iso()
+                if note:
+                    q.setdefault("hypotheses", []).append(
+                        f"（{_now_iso()[:10]}）{note}"
+                    )
+                save_self_model(m, snapshot=False)
+                print(f"[L0] touch open_question: {qid} refs={q['refs']}")
+                # ★ 每次被想起来后，进入 3 轮冷却
+                _oq_cooldown[qid] = 3
+                return True
+        return False
+
+
+# ══════════════════════════════════════════════════════
 # learning_tasks
 # ══════════════════════════════════════════════════════
 def list_learning_tasks(status="pending"):
@@ -468,21 +656,60 @@ def list_learning_tasks(status="pending"):
 
 
 def add_learning_task(topic, reason, priority=0.5, source="unknown"):
+    """新增学习任务
+
+    去重规则：
+    1. 完全同名 pending → 返回已存在的 id
+    2. 语义相似度 ≥ 0.7 → 视为重复，返回已存在的 id
+    3. pending 总数 ≥ 15 → 拒绝新增
+    """
     if not topic:
         return None
+    topic = topic.strip()
+    if not topic:
+        return None
+
     with _lock:
         d = _load_json(LEARNING_TASKS_FILE, _default_learning_tasks)
         tasks = d.setdefault("tasks", [])
 
-        # 同 topic 已 pending → 不重复加
+        # 1. 完全同名
         for t in tasks:
             if t.get("topic") == topic and t.get("status") == "pending":
                 return t.get("id")
 
+        # 2. 相似度去重
+        try:
+            new_chars = _topic_core_chars(topic)
+            if new_chars:
+                for t in tasks:
+                    if t.get("status") != "pending":
+                        continue
+                    existing = t.get("topic", "")
+                    if not existing:
+                        continue
+                    ex_chars = _topic_core_chars(existing)
+                    if not ex_chars:
+                        continue
+                    inter = len(new_chars & ex_chars)
+                    union = len(new_chars | ex_chars)
+                    sim = inter / union if union > 0 else 0.0
+                    if sim >= 0.7:
+                        return t.get("id")
+        except Exception:
+            pass
+
+        # 3. pending 上限
+        pending_count = sum(1 for t in tasks if t.get("status") == "pending")
+        if pending_count >= 15:
+            print(f"[L0] learning_tasks pending 已满（{pending_count}/15），丢弃: {topic[:30]}")
+            return None
+
+        # 4. 加新任务
         tid = f"task_{int(time.time() * 1000)}_{uuid.uuid4().hex[:4]}"
         tasks.append({
             "id": tid,
-            "topic": topic.strip(),
+            "topic": topic,
             "reason": (reason or "").strip(),
             "priority": round(float(priority), 3),
             "status": "pending",
@@ -493,7 +720,7 @@ def add_learning_task(topic, reason, priority=0.5, source="unknown"):
         d.setdefault("meta", {})
         d["meta"]["total_created"] = d["meta"].get("total_created", 0) + 1
         _save_json(LEARNING_TASKS_FILE, d)
-        print(f"[L0] 新增学习任务: {topic}")
+        print(f"[L0] 新增学习任务: {topic[:40]}（pending {pending_count+1}/15）")
         return tid
 
 
@@ -569,175 +796,3 @@ def snapshot_for_prompt():
         "open_question_count": len(m.get("open_questions", [])),
         "pending_task_count": len(list_learning_tasks("pending")),
     }
-
-# ══════════════════════════════════════════════════════
-# 反馈更新：调整 confidence
-# ══════════════════════════════════════════════════════
-CONF_MIN = 0.1
-CONF_MAX = 0.95
-CONF_LOW_THRESHOLD = 0.3   # 低于这个值，进入 open_questions
-
-
-def bump_confidence(topic, delta, reason=""):
-    """调整某个 topic 的 confidence
-
-    delta > 0 → 提升（用户肯定）
-    delta < 0 → 降低（用户否定）
-    范围 [CONF_MIN, CONF_MAX]
-    confidence 低于 CONF_LOW_THRESHOLD 时，加入 open_questions
-    返回 (ok, new_confidence)
-    """
-    if not topic:
-        return False, 0.0
-
-    with _lock:
-        m = load_self_model()
-        opinions = m.get("opinions", {})
-        op = opinions.get(topic)
-        if not op:
-            return False, 0.0
-
-        old_conf = float(op.get("confidence", 0.5))
-        new_conf = max(CONF_MIN, min(CONF_MAX, old_conf + float(delta)))
-        op["confidence"] = round(new_conf, 3)
-        op["last_updated"] = _now_iso()
-
-        # 记录到 history
-        op.setdefault("history", []).append({
-            "version": int(op.get("iteration_count", 1)),
-            "view": op.get("my_view", ""),
-            "confidence": round(new_conf, 3),
-            "ts": _now_iso(),
-            "source": "feedback",
-            "note": f"confidence {old_conf:.2f} -> {new_conf:.2f} ({reason})",
-        })
-
-        # 低置信度 → open_questions
-        if new_conf < CONF_LOW_THRESHOLD:
-            existing_q = [
-                q.get("question", "")
-                for q in m.get("open_questions", [])
-            ]
-            q_text = (
-                f"我对「{topic}」的理解 confidence 很低"
-                f"（{new_conf:.2f}），需要重新确认"
-            )
-            if q_text not in existing_q:
-                m.setdefault("open_questions", []).append({
-                    "id": f"q_{int(time.time() * 1000)}_{uuid.uuid4().hex[:4]}",
-                    "question": q_text,
-                    "status": "exploring",
-                    "related_episodes": [],
-                    "hypotheses": [
-                        f"上次观点：{op.get('my_view', '')[:60]}"
-                    ],
-                    "created_at": _now_iso(),
-                    "last_progress": _now_iso(),
-                })
-
-        save_self_model(m, snapshot=True)
-        print(f"[L0] bump {topic}: {old_conf:.2f} -> {new_conf:.2f} ({reason})")
-        return True, new_conf
-
-# ══════════════════════════════════════════════════════
-# 质变点 3：open_questions 被"想起"
-# ══════════════════════════════════════════════════════
-_OQ_STOPCHARS = set("的了呢嘛呀吧啊是我你他她它们这那什么怎么如何为什么？?！!。.，,、；;：: \t\n\"'「」『』")
-
-
-def _oq_core_chars(text):
-    """提取文本核心字符（去虚词、去标点）"""
-    if not text:
-        return set()
-    return set(c for c in text if c not in _OQ_STOPCHARS and c.strip())
-
-# ══════════════════════════════════════════════════════
-# open_question 提起冷却
-# ══════════════════════════════════════════════════════
-_oq_cooldown = {}   # {qid: remaining_rounds}
-
-
-def _decay_oq_cooldown():
-    """每轮对话递减冷却计数"""
-    for qid in list(_oq_cooldown.keys()):
-        _oq_cooldown[qid] -= 1
-        if _oq_cooldown[qid] <= 0:
-            del _oq_cooldown[qid]
-
-def find_relevant_open_questions(user_msg, top_k=2, min_score=0.3):
-    """从 open_questions 里找和当前消息相关的
-
-    匹配算法：字符集 jaccard
-    - user_msg 和 question 都做核心字提取
-    - 交集 / 并集 >= min_score 算命中
-
-    返回：[{"id":..., "question":..., "score":..., "refs":...}, ...]
-    按 score 降序，最多 top_k 条
-    """
-    if not user_msg:
-        return []
-
-    user_chars = _oq_core_chars(user_msg)
-    if not user_chars:
-        return []
-
-    m = load_self_model()
-    questions = m.get("open_questions", [])
-    if not questions:
-        return []
-
-    scored = []
-    for q in questions:
-        if q.get("status") != "exploring":
-            continue
-        q_text = q.get("question", "")
-        if not q_text:
-            continue
-
-        q_chars = _oq_core_chars(q_text)
-        if not q_chars:
-            continue
-
-        inter = len(user_chars & q_chars)
-        union = len(user_chars | q_chars)
-        score = inter / union if union > 0 else 0.0
-
-        if score >= min_score:
-            scored.append({
-                "id": q.get("id"),
-                "question": q_text,
-                "score": round(score, 3),
-                "refs": int(q.get("refs", 0)),
-            })
-    # ★ 过滤掉正在冷却的
-    scored = [s for s in scored if s["id"] not in _oq_cooldown]
-    scored.sort(key=lambda x: -x["score"])
-    return scored[:top_k]
-
-
-def touch_open_question(qid, note=""):
-    """标记某个 open_question 被"想起来"了一次
-
-    - refs += 1
-    - last_progress 更新为当前时间
-    - 如果 note 非空，追加到 hypotheses
-    """
-    if not qid:
-        return False
-
-    with _lock:
-        m = load_self_model()
-        for q in m.get("open_questions", []):
-            if q.get("id") == qid:
-                q["refs"] = int(q.get("refs", 0)) + 1
-                q["last_progress"] = _now_iso()
-                if note:
-                    q.setdefault("hypotheses", []).append(
-                        f"（{_now_iso()[:10]}）{note}"
-                    )
-                save_self_model(m, snapshot=False)
-                print(f"[L0] touch open_question: {qid} refs={q['refs']}")
-                # ★ 每次被想起来后，进入 3 轮冷却
-                _oq_cooldown[qid] = 3
-                return True
-        return False

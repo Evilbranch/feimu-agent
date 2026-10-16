@@ -24,7 +24,7 @@ _lock = threading.Lock()
 CHECK_INTERVAL = 300         # 首次唤醒延迟（仅用于初始化）
 IDLE_THRESHOLD = 600         # 10 分钟没互动才算"独处"
 MAX_SPEAK_PER_HOUR = 2       # 每小时最多主动 2 次
-MIN_SPEAK_GAP = 900          # 两次主动至少 15 分钟
+MIN_SPEAK_GAP = 1800          # 两次主动至少 15 分钟
 DUP_THRESHOLD = 0.75         # Jaccard 相似度 > 0.75 视为重复（中文标点共享率高，阈值调高）
 
 # 自唤醒边界
@@ -520,7 +520,7 @@ def _is_fabricated(content):
     return False
 
 # ==================== 当晚整理 ====================
-_night_consolidate_date = [None]   # 记录今晚是否已整理
+_night_consolidate_ts = [0]   # 上次整理的时间戳
 
 
 def _maybe_night_consolidate(client, provider):
@@ -533,12 +533,15 @@ def _maybe_night_consolidate(client, provider):
     4. 标记 L2 已巩固
     5. 记录整理日志
 
-    每个自然日只跑一次（_night_consolidate_date 防重）。
+    ★ 用时间戳判断，不用日期——避免跨天时重复跑。
+    距离上次超过 20 小时才算新一次。
     """
-    today = time.strftime("%Y-%m-%d")
-    if _night_consolidate_date[0] == today:
+    now = time.time()
+    if now - _night_consolidate_ts[0] < 20 * 3600:
         return
-    _night_consolidate_date[0] = today
+    _night_consolidate_ts[0] = now
+
+    today = time.strftime("%Y-%m-%d")
 
     print(f"\n[当晚整理] ========== {today} 开始 ==========")
 
@@ -708,8 +711,10 @@ def inner_life_loop(client, provider):
     _loop_start = time.time()
 
     next_wake_at = time.time() + CHECK_INTERVAL
-    # ★ 认知任务独立调度器：不受 next_wake_at / IDLE_THRESHOLD 影响
+    # ★ 认知任务独立调度器
     _next_cog_at = [time.time() + CHECK_INTERVAL]
+    # ★ 上次认知任务执行时间戳（用于用户在线时限流）
+    _last_cog_ts = [0]
     print(f"[内在] 自唤醒循环已启动，首次唤醒 {_format_wake_time(CHECK_INTERVAL)} 后")
 
     while not s.shutdown_flag.is_set():
@@ -734,19 +739,28 @@ def inner_life_loop(client, provider):
             )
 
             if _night and not _user_active:
-                # 用户不在 → 只做当晚整理 + 休眠
-                # 只在 23:00~24:00 之间打印一次日志，避免刷屏
-                h = time.localtime().tm_hour
-                if h == NIGHT_START:
+                # ★ 必须在 next_wake_at 之前检查，否则每 15 秒重跑
+                if now < next_wake_at:
+                    continue
+
+                # 只有第一次进入深夜才打印
+                if not getattr(s, "_night_announced", False):
                     print(
                         f"[深夜] {time.strftime('%H:%M')} 进入休眠"
                         f"（用户离线 {int((now - _last_interaction) / 60)} 分钟）"
                     )
+                    s._night_announced = True
+
                 # ★ 当晚整理
                 _maybe_night_consolidate(client, provider)
                 # 每小时醒一次检查是否白天
                 next_wake_at = now + 3600
                 continue
+
+            # ★ 白天：重置"深夜已宣布"标志
+            if not _night:
+                if getattr(s, "_night_announced", False):
+                    s._night_announced = False
 
             # 用户在线但深夜 → 允许对话，但下游禁 explore
             # （通过 _night 变量传给下游）
@@ -754,13 +768,31 @@ def inner_life_loop(client, provider):
             # 认知任务检查：独立调度，不受用户在线影响
             # ══════════════════════════════════════════════════
             if now >= _next_cog_at[0]:
-                _cog_route = None
-                try:
-                    from brain.cognitive_orchestrator import CognitiveOrchestrator
-                    _orch = CognitiveOrchestrator()
-                    _cog_route = _orch.route()
-                except Exception as e:
-                    print(f"[编排] 路由失败: {e}")
+                # ★ 用户在线时，explore 每小时最多 1 次
+                _user_online = (now - getattr(s, "last_interaction_time", 0)) < 600
+                if _user_online and _last_cog_ts[0] > 0:
+                    _since_last = now - _last_cog_ts[0]
+                    if _since_last < 3600:
+                        # 还没到 1 小时，10 分钟后再检查
+                        _next_cog_at[0] = now + 600
+                        # 不 break，继续往下检查 speak/idle 逻辑
+                        _cog_route = None
+                    else:
+                        _cog_route = None
+                        try:
+                            from brain.cognitive_orchestrator import CognitiveOrchestrator
+                            _orch = CognitiveOrchestrator()
+                            _cog_route = _orch.route()
+                        except Exception as e:
+                            print(f"[编排] 路由失败: {e}")
+                else:
+                    _cog_route = None
+                    try:
+                        from brain.cognitive_orchestrator import CognitiveOrchestrator
+                        _orch = CognitiveOrchestrator()
+                        _cog_route = _orch.route()
+                    except Exception as e:
+                        print(f"[编排] 路由失败: {e}")
 
                 if _cog_route and _cog_route.get("task_type") != "normal":
                     # 有认知任务 → 立刻执行，不管用户是否在线
@@ -780,6 +812,7 @@ def inner_life_loop(client, provider):
                             "next_wake": _cog_route.get("next_wake", 1800),
                             "wake_reason": "认知任务完成" if _ok else "认知任务失败",
                         })
+                        _last_cog_ts[0] = now
                         _next_cog_at[0] = now + _cog_route.get("next_wake", 1800)
                     except Exception as e:
                         print(f"[编排] 异常: {e}")

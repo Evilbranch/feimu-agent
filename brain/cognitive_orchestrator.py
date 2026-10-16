@@ -11,6 +11,65 @@
 - 每次唤醒最多执行 1 个任务
 """
 import time
+import os
+import json
+
+
+# ══════════════════════════════════════════════════════
+# 话题多样性辅助
+# ══════════════════════════════════════════════════════
+def _load_recent_explore_topics(limit=5):
+    """从 inner_thoughts.json 读最近 explore 的 topic"""
+    try:
+        from core.constants import DATA_DIR
+        _path = os.path.join(DATA_DIR, "inner_thoughts.json")
+        if not os.path.exists(_path):
+            return []
+        with open(_path, "r", encoding="utf-8") as f:
+            log = json.load(f)
+        # 从后往前找 explore 类型的
+        topics = []
+        for e in reversed(log):
+            if e.get("intent") == "explore":
+                c = (e.get("content") or "").strip()
+                if c:
+                    topics.append(c)
+                if len(topics) >= limit:
+                    break
+        return topics
+    except Exception as e:
+        print(f"[编排] 读取最近 explore 失败: {e}")
+        return []
+
+
+def _is_similar_to_any(topic, recent_list, threshold=0.5):
+    """判断 topic 是否与 recent_list 里任何一条相似
+
+    双重判据：
+    - jaccard ≥ 0.4（整体相似）
+    - 或 核心字交集 ≥ 3（关键概念重叠）
+    """
+    if not topic or not recent_list:
+        return False
+    try:
+        from brain.l0_model import _topic_core_chars
+        new_chars = _topic_core_chars(topic)
+        if not new_chars:
+            return False
+        for old in recent_list:
+            old_chars = _topic_core_chars(old)
+            if not old_chars:
+                continue
+            inter = len(new_chars & old_chars)
+            union = len(new_chars | old_chars)
+            sim = inter / union if union > 0 else 0.0
+            if sim >= 0.4 or inter >= 3:
+                return True
+        return False
+    except Exception as e:
+        print(f"[编排] 相似判断异常: {e}")
+        return False
+
 from datetime import datetime
 
 from brain import l0_model
@@ -44,13 +103,31 @@ class CognitiveOrchestrator:
         try:
             tasks = l0_model.list_learning_tasks("pending")
             if tasks:
-                # 按 priority 降序，取最高
+                # 按 priority 降序
                 tasks_sorted = sorted(
                     tasks, key=lambda t: -float(t.get("priority", 0))
                 )
-                task = tasks_sorted[0]
+
+                # ★ 话题多样性：优先挑"最近没探索过的族"
+                _recent = _load_recent_explore_topics(limit=5)
+                _chosen = None
+                if _recent:
+                    for t in tasks_sorted:
+                        _topic = (t.get("topic") or "").strip()
+                        if not _topic:
+                            continue
+                        if not _is_similar_to_any(_topic, _recent, threshold=0.5):
+                            _chosen = t
+                            break
+                if _chosen is None:
+                    _chosen = tasks_sorted[0]
+
+                task = _chosen
                 topic = task.get("topic", "").strip()
                 if topic:
+                    # 打印"换族"信息
+                    if _recent and not _is_similar_to_any(topic, _recent, threshold=0.5):
+                        print(f"[编排] 换族：{topic[:30]}（避开最近 {len(_recent)} 次）")
                     return {
                         "task_type": "explore",
                         "reason": f"学习任务：{topic}",

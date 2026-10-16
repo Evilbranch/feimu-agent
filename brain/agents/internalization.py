@@ -34,11 +34,16 @@ _ANALYZE_SYSTEM = """你是绯木。你刚刚在网上搜索了"{topic}"，搜�
 4. 【my_plan】我打算怎么用它？具体行动，不是泛泛而谈。
 5. 【uncertain】我还不太确定的、想进一步了解的问题列表（可以为空）。
 
-严格要求：
-- facts 只写搜索结果里明确有的
+【严禁 - 违反任何一条都算错误】：
+- facts 只写搜索结果里**明确出现**的内容
+- **绝对禁止**引入搜索结果和主题里**都没出现**的概念
+  · 不要写"弟弟"、"妹妹"、"家人"（除非主题里明确提到）
+  · 不要写"跳跳哥哥"、"游戏角色"（除非主题是游戏）
+  · 不要写"哥哥的压力"（如果主题是技术，就不要扯到情绪）
 - my_view 可以主观，但不能编造"我记得""我以前"
-- 如果某个问题搜索结果不够回答，写"我还不清楚"
-- 不要写"作为AI""作为助手"
+- uncertain 里的问题必须**紧扣主题**，不能扩展到不相关的话题
+- 如果搜索结果**不相关**（比如搜技能返回游戏攻略），
+  facts 就写"搜索结果没有找到相关信息"，不要硬写
 
 直接输出 JSON，不要任何前后缀：
 {{
@@ -341,6 +346,13 @@ class InternalizationAgent:
         for q in uncertain:
             q = (q or "").strip()
             if not q or len(q) < 3:
+                continue
+            # ★ 过滤明显偏离主题的 uncertain（防幻觉）
+            _topic_chars = set(c for c in topic if c not in "的了呢嘛呀吧啊？！。，")
+            _q_chars = set(c for c in q if c not in "的了呢嘛呀吧啊？！。，")
+            _overlap = len(_topic_chars & _q_chars) / max(1, len(_q_chars))
+            if _overlap < 0.15:
+                print(f"[内化] uncertain 偏离主题，丢弃: {q[:30]}")
                 continue
             try:
                 tid = l0_model.add_learning_task(

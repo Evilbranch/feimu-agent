@@ -18,6 +18,7 @@ _lock = threading.Lock()
 META_INTERVAL = 1800        # 每 30 分钟观测一次
 MIN_LOG_COUNT = 5           # 至少 5 条日志才分析
 REVERSE_COOLDOWN = 3600     # 1 小时内不允许反转方向
+ADJUSTMENT_HOLD = 3600      # 任何调整至少持有 60 分钟才能被换掉
 
 # 相反方向映射（用于防横跳）
 _OPPOSITES = {
@@ -97,12 +98,14 @@ def _save_last_adj(adj, ts):
 
 
 def _resolve_adjustment(new_adj):
-    """防横跳：
-    - 同向 → 保持，刷新时间戳
-    - 反向且 1 小时内 → 拦成 none
-    - 反向且超过 1 小时 → 允许切换
+    """防横跳：任何调整必须持有 ADJUSTMENT_HOLD 秒才能被替换
+
+    规则：
+    - 同向 → 刷新时间戳，保持
+    - 无历史 → 直接采用
+    - 有历史且未到期 → 保持旧的（不管方向）
+    - 有历史且已到期 → 允许切换
     """
-    
     if new_adj == "none":
         return "none"
 
@@ -111,20 +114,30 @@ def _resolve_adjustment(new_adj):
     last_ts = last.get("ts", 0)
     now = time.time()
 
-    # 同向：保持
+    # 无历史 → 采用
+    if last_adj == "none" or last_ts == 0:
+        _save_last_adj(new_adj, now)
+        print(f"[元认知] 采纳调整：{new_adj}")
+        return new_adj
+
+    # 同向 → 刷新时间戳
     if new_adj == last_adj:
         _save_last_adj(new_adj, now)
         return new_adj
 
-    # 反向：检查冷却
-    is_reverse = _OPPOSITES.get(new_adj) == last_adj
-    if is_reverse and (now - last_ts < REVERSE_COOLDOWN):
-        remain = int((REVERSE_COOLDOWN - (now - last_ts)) / 60)
-        print(f"[元认知-防横跳] {last_adj} → {new_adj} 被拦截（{remain} 分钟后才允许反转）")
-        return "none"
+    # ★ 有历史且未到期 → 保持旧的
+    elapsed = now - last_ts
+    if elapsed < ADJUSTMENT_HOLD:
+        remain = int((ADJUSTMENT_HOLD - elapsed) / 60)
+        print(
+            f"[元认知-防横跳] 保持 {last_adj}"
+            f"（还有 {remain} 分钟才能换成 {new_adj}）"
+        )
+        return last_adj
 
-    # 允许切换（反向但超时，或无关方向）
+    # 已到期 → 允许切换
     _save_last_adj(new_adj, now)
+    print(f"[元认知] 调整切换：{last_adj} → {new_adj}")
     return new_adj
 
 
