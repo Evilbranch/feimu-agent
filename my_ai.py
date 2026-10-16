@@ -422,18 +422,27 @@ def handle_slash_command(ui, s):
     elif cmd.startswith("l0-history "):
         try:
             topic = ui[1:].strip()[len("l0-history "):].strip()
-            from brain.l0_model import get_history
+            from brain.l0_model import get_history, get_opinion
             hist = get_history(topic)
+            op = get_opinion(topic)
             if not hist:
-                print(f"\n（没有 {topic} 的观点历史）\n")
+                print(f"\n（没有 '{topic}' 的观点历史）\n")
+                print(f"提示：用 /l0 查看所有观点标题\n")
                 return True
-            print(f"\n=== {topic} 的观点演变（{len(hist)} 版）===")
+            print(f"\n=== '{topic}' 的观点演变（{len(hist)} 版）===")
             for h in hist:
                 v = h.get("version", "?")
                 ts = h.get("ts", "")
                 conf = h.get("confidence", 0)
-                print(f"  v{v} [{ts}] conf={conf:.2f}")
-                print(f"    {h.get('view', '')}")
+                view = h.get("view", "")
+                src = h.get("source", "")
+                bar = "█" * int(conf * 10)
+                print(f"  v{v} [{ts}] {bar} {conf:.2f}  ({src})")
+                print(f"    {view}")
+            if op:
+                print(f"\n  当前：{op.get('my_view', '')}")
+                print(f"  confidence={op.get('confidence', 0):.2f}  "
+                      f"iteration={op.get('iteration_count', 0)}")
             print("========================\n")
         except Exception as e:
             print(f"[l0-history] 失败: {e}")
@@ -461,6 +470,191 @@ def handle_slash_command(ui, s):
         except Exception as e:
             print(f"[情景] 读取失败: {e}")
         return True
+    elif cmd in ["diary", "日记"] or cmd.startswith("diary "):
+        try:
+            from tools.diary import _load_diary
+            diary = _load_diary()
+            if not diary:
+                print("\n（还没写过日记）\n")
+                return True
+
+            # 解析日期参数
+            date_arg = None
+            if cmd.startswith("diary "):
+                date_arg = cmd[len("diary "):].strip()
+
+            diary_sorted = sorted(diary, key=lambda x: x.get("date", ""))
+
+            if date_arg:
+                target = [d for d in diary_sorted if d.get("date") == date_arg]
+                if not target:
+                    print(f"\n（{date_arg} 没有日记）\n")
+                    return True
+                show = target
+            else:
+                show = diary_sorted[-3:]
+
+            print(f"\n=== 日记（最近 {len(show)} 篇）===")
+            for d in show:
+                date = d.get("date", "?")
+                summary = d.get("summary", "")
+                count = d.get("message_count", 0)
+                print(f"\n【{date}】（{count} 轮对话）")
+                print(f"  {summary}")
+            print("\n====================================\n")
+        except Exception as e:
+            print(f"[diary] 读取失败: {e}")
+        return True
+
+    elif cmd in ["reflect", "自语"] or cmd.startswith("reflect "):
+        try:
+            import json as _json
+            from core.constants import SCRIPT_DIR
+            import os as _os
+            path = _os.path.join(SCRIPT_DIR, "data", "self_reflections.json")
+            if not _os.path.exists(path):
+                print("\n（还没有自语记录）\n")
+                return True
+            with open(path, "r", encoding="utf-8") as f:
+                logs = _json.load(f)
+
+            n = 10
+            if cmd.startswith("reflect "):
+                try:
+                    n = int(cmd[len("reflect "):].strip())
+                except Exception:
+                    pass
+
+            recent = logs[-n:]
+            print(f"\n=== 最近 {len(recent)} 条自语（L4）===")
+            for r in recent:
+                ts = r.get("ts", 0)
+                import time as _time
+                t = _time.strftime("%m-%d %H:%M", _time.localtime(ts))
+                silent = r.get("silent", False)
+                text = r.get("reflect", "") or ""
+                v = r.get("v", 0)
+                own = (r.get("own", "") or "")[:30]
+                if silent:
+                    print(f"  [{t}] v={v:+.2f}  （静默）  说了: {own}")
+                else:
+                    print(f"  [{t}] v={v:+.2f}")
+                    print(f"    说了: {own}")
+                    print(f"    自语: {text}")
+            print("====================================\n")
+        except Exception as e:
+            print(f"[reflect] 读取失败: {e}")
+        return True
+
+    elif cmd in ["decay", "衰减"]:
+        try:
+            import json as _json
+            from core.constants import DATA_DIR
+            import os as _os
+            import time as _time
+
+            log_path = _os.path.join(DATA_DIR, "decay_log.json")
+            state_path = _os.path.join(DATA_DIR, "decay_last.txt")
+
+            print("\n=== L2 记忆衰减状态 ===")
+            if _os.path.exists(state_path):
+                try:
+                    with open(state_path, "r") as f:
+                        last_ts = float(f.read().strip())
+                    ago_h = (_time.time() - last_ts) / 3600
+                    print(f"  上次衰减：{ago_h:.1f} 小时前")
+                except Exception:
+                    pass
+
+            if _os.path.exists(log_path):
+                with open(log_path, "r", encoding="utf-8") as f:
+                    logs = _json.load(f)
+                if logs:
+                    last = logs[-1]
+                    print(f"  最近一次：处理 {last.get('processed', 0)} 条，"
+                          f"衰减 {last.get('decayed', 0)} 条，"
+                          f"归档 {last.get('archived', 0)} 条")
+                    print(f"\n  最近 5 次记录：")
+                    for r in logs[-5:]:
+                        ts = _time.strftime("%m-%d %H:%M",
+                                            _time.localtime(r.get("ts", 0)))
+                        print(f"    [{ts}] 处理 {r.get('processed', 0)}, "
+                              f"衰减 {r.get('decayed', 0)}, "
+                              f"归档 {r.get('archived', 0)}")
+                else:
+                    print("  （还没有衰减记录）")
+            else:
+                print("  （还没有衰减记录）")
+
+            # 统计 L2 当前状态
+            from brain.episodic import EPISODES_DIR
+            if _os.path.exists(EPISODES_DIR):
+                total = 0
+                archived = 0
+                for f in _os.listdir(EPISODES_DIR):
+                    if not f.endswith(".json"):
+                        continue
+                    try:
+                        with open(_os.path.join(EPISODES_DIR, f),
+                                  encoding="utf-8") as fp:
+                            items = _json.load(fp)
+                        total += len(items)
+                        archived += sum(1 for m in items
+                                        if m.get("status") == "archived")
+                    except Exception:
+                        continue
+                print(f"\n  L2 总量：{total} 条")
+                print(f"  已归档：{archived} 条")
+                print(f"  活跃：{total - archived} 条")
+            print("========================\n")
+        except Exception as e:
+            print(f"[decay] 读取失败: {e}")
+        return True
+
+    elif cmd in ["l0-model", "l0model", "自我模型"]:
+        try:
+            import json as _json
+            from brain.l0_model import load_self_model
+            m = load_self_model()
+            si = m.get("self_identity", {})
+            who = si.get("who_i_am", {})
+
+            print("\n=== L0 核心自我（完整快照）===")
+            print(f"\n【我是谁】")
+            print(f"  {who.get('statement', '')}")
+            print(f"  confidence={who.get('confidence', 0):.2f}  "
+                  f"last_updated={who.get('last_updated', '?')}")
+
+            print(f"\n【价值观】")
+            for v in si.get("core_values", []):
+                print(f"  · {v}")
+
+            print(f"\n【边界】")
+            for b in si.get("boundaries", []):
+                print(f"  · {b}")
+
+            ops = m.get("opinions", {})
+            print(f"\n【观点】（{len(ops)} 个）")
+            for topic, op in ops.items():
+                conf = op.get("confidence", 0)
+                it = op.get("iteration_count", 0)
+                print(f"  · [{topic}] conf={conf:.2f} iter={it}")
+
+            oqs = m.get("open_questions", [])
+            print(f"\n【未解问题】（{len(oqs)} 个）")
+            for q in oqs:
+                refs = q.get("refs", 0)
+                print(f"  · {q.get('question', '')}  (refs={refs})")
+
+            meta = m.get("meta", {})
+            dr_count = meta.get("deep_reflect_count", 0)
+            print(f"\n【元信息】")
+            print(f"  深反思执行次数：{dr_count}")
+            print(f"  最近一次 explore：{meta.get('last_explore', '?')}")
+            print("==============================\n")
+        except Exception as e:
+            print(f"[l0-model] 读取失败: {e}")
+        return True
     elif cmd in ("explore", "学习", "探索") or cmd.startswith(("explore ", "学习 ", "探索 ")):
         try:
             parts = ui[1:].split(maxsplit=1)
@@ -483,30 +677,51 @@ def handle_slash_command(ui, s):
             print(f"[探索] 失败: {e}")
         return True
     elif cmd in ["help", "帮助"]:
-        print("\n=== 可用命令 ===")
-        print("  /mute        - 静音")
-        print("  /unmute      - 取消静音")
-        print("  /voice       - 切换语音输入")
-        print("  /text        - 切换文本输入")
+        print("\n" + "=" * 50)
+        print("  绯木命令手册")
+        print("=" * 50)
+
+        print("\n【对话控制】")
+        print("  /mute          - 静音（不发声）")
+        print("  /unmute        - 取消静音")
+        print("  /voice         - 切换语音输入")
+        print("  /text          - 切换文本输入")
+        print("  /quit          - 退出程序")
+        print("  \"\"\"  (三引号) - 多行输入模式")
+
+        print("\n【人格状态】")
+        print("  /persona       - 人格状态（drives/emotion）")
+        print("  /mode          - 查看/切换模式")
+        print("  /preferences   - 她的偏好")
+
+        print("\n【内在活动】")
+        print("  /inner         - 最近内在活动日志")
+        print("  /reflect [N]   - 最近 N 条自语（默认 10）")
+
+        print("\n【记忆系统】")
+        print("  /memory        - 短期记忆槽位统计")
+        print("  /episodes      - 最近 7 天情景记忆")
+        print("  /decay         - L2 记忆衰减状态")
+        print("  /diary [日期]  - 查看日记（默认最近 3 篇）")
+
+        print("\n【L0 核心自我】")
+        print("  /l0            - 简洁视图")
+        print("  /l0-model      - 完整快照（含观点/未解问题/元信息）")
+        print("  /l0-history T  - 某话题的观点演变")
+        print("  /learning      - 学习任务")
+
+        print("\n【探索】")
+        print("  /explore KW    - 手动触发探索（测试用）")
+
+        print("\n【主动关心】")
         print("  /proactive_on  - 开启主动关心")
         print("  /proactive_off - 关闭主动关心")
-        print("  /quiet       - 安静 1 小时")
-        print("  /interval N  - 设置主动间隔（如 /interval 30s）")
-        print("  /speakers    - 列出声纹库")
-        print("  /mode        - 查看/切换模式")
-        print("  /memory      - 查看记忆槽位")
-        print("  /persona     - 查看人格状态")
-        print("  /preferences - 查看她的偏好")
-        print("  /reflect     - 手动触发反思")
-        print("  /inner       - 查看她最近在想什么")
-        print("  /episodes    - 查看最近 7 天的情景记忆")
-        print("  /l0          - 查看 L0 核心自我")
-        print("  /learning    - 查看学习任务")
-        print("  /l0-history <topic> - 查看观点演变")
-        print("  /explore KW  - 手动触发探索（测试用）")
-        print("  /quit        - 退出程序")
-        print("  \"\"\"          - 多行输入")
-        print("================\n")
+        print("  /quiet         - 安静 1 小时")
+        print("  /interval N    - 设置主动间隔（如 /interval 30s）")
+
+        print("\n【其他】")
+        print("  /speakers      - 列出声纹库")
+        print("=" * 50 + "\n")
         return True
     else:
         print(f"[未知命令] /{cmd}，输入 /help 查看帮助")
@@ -958,6 +1173,12 @@ def main():
         print("[巩固] L2→L1 巩固循环已启动")
     except Exception as e:
         print(f"[巩固] 启动失败: {e}")
+    # ★ L2 记忆衰减
+    try:
+        from brain.decay import decay_loop
+        threading.Thread(target=decay_loop, daemon=True).start()
+    except Exception as e:
+        print(f"[衰减] 启动失败: {e}")
 
     # 启动 HTTP 服务
     api_server.set_context(client, provider, history, session_start)

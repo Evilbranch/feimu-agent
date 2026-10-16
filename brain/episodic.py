@@ -175,14 +175,47 @@ def _time_of_day(hour):
 # ══════════════════════════════════════════════════════
 # 检索
 # ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+# 情绪匹配（质变点 2 Stage 1）
+# ══════════════════════════════════════════════════════
+def _current_emotion():
+    """读当前情绪 v/a"""
+    try:
+        from brain.persona import get_current_state
+        st = get_current_state()
+        e = st.get("emotion", {})
+        return float(e.get("valence", 0.2)), float(e.get("arousal", 0.4))
+    except Exception:
+        return 0.2, 0.4
+
+
+def _emotion_match(cur_v, cur_a, mem_emotion):
+    """计算情绪匹配度 [0, 1]
+
+    - 记忆没有 self_emotion → 0.5（中性）
+    - 情绪相近 → 接近 1.0
+    - 情绪相反 → 接近 0.0
+    """
+    if not mem_emotion or not isinstance(mem_emotion, dict):
+        return 0.5
+
+    mem_v = float(mem_emotion.get("valence", 0.0))
+    mem_a = float(mem_emotion.get("arousal", 0.4))
+
+    # v 相似度
+    dv = abs(cur_v - mem_v) / 2.0   # v 范围 [-1,1]，最大差 2
+    # a 相似度
+    da = abs(cur_a - mem_a)         # a 范围 [0,1]，最大差 1
+    # 综合距离
+    dist = (dv + da) / 2.0
+    return max(0.0, 1.0 - dist)
+
+
 def retrieve_episodes(query=None, top_k=5, days_back=90, min_importance=0.3):
     """检索情景记忆
 
-    检索策略（与纯向量检索不同）：
-    1. 先按时间窗口过滤（默认最近 90 天）
-    2. 按重要性过滤（低于阈值的丢弃）
-    3. 按综合分数排序：
-       score = 时间新鲜度 * 0.3 + 重要性 * 0.4 + 引用频率 * 0.3
+    综合分数（质变点 2 后）：
+    score = freshness * 0.25 + importance * 0.3 + refs * 0.25 + emotion_match * 0.2
     """
     now = time.time()
     cutoff = now - days_back * 86400
@@ -201,16 +234,47 @@ def retrieve_episodes(query=None, top_k=5, days_back=90, min_importance=0.3):
 
     all_items = [m for m in all_items if m.get("importance", 0) >= min_importance]
 
+    # ★ 读当前情绪
+    cur_v, cur_a = _current_emotion()
+
     scored = []
     for m in all_items:
         age_days = (now - m.get("ts", now)) / 86400
-        freshness = max(0.0, 1.0 - age_days / 90)  # 90天线性衰减
-        ref_score = min(1.0, m.get("refs", 0) / 5.0)
-        score = freshness * 0.3 + m.get("importance", 0) * 0.4 + ref_score * 0.3
+        freshness = max(0.0, 1.0 - age_days / 90)
+
+        # ★ refs 时间衰减：30 天没被引用 → 减半
+        refs = m.get("refs", 0)
+        last_ref = m.get("last_ref", m.get("ts", now))
+        days_since_ref = (now - last_ref) / 86400
+        ref_decay = max(0.3, 1.0 - days_since_ref / 60)
+        ref_score = min(1.0, refs / 5.0) * ref_decay
+
+        emo_match = _emotion_match(cur_v, cur_a, m.get("self_emotion"))
+
+        # base：基础分数
+        base = (
+            freshness * 0.4 +
+            m.get("importance", 0) * 0.45 +
+            ref_score * 0.15
+        )
+        # ★ 情绪加成：范围 [0.4, 1.0]
+        boost = 0.4 + emo_match * 0.6
+        score = base * boost
         scored.append((score, m))
 
     scored.sort(key=lambda x: -x[0])
-    results = [m for _, m in scored[:top_k]]
+
+    # ★ 多样性：同一情绪标签最多 2 条
+    results = []
+    emotion_count = {}
+    for _, m in scored:
+        label = m.get("self_emotion", {}).get("label", "中性")
+        if emotion_count.get(label, 0) >= 2:
+            continue
+        results.append(m)
+        emotion_count[label] = emotion_count.get(label, 0) + 1
+        if len(results) >= top_k:
+            break
 
     if results:
         _bump_refs([m["id"] for m in results])
