@@ -107,7 +107,15 @@ class CognitiveOrchestrator:
                 tasks_sorted = sorted(
                     tasks, key=lambda t: -float(t.get("priority", 0))
                 )
-
+                # ★ 跳过"关于哥哥"的任务（P1-2：L0 是她的世界认知，不是用户档案）
+                _BAD_TOPIC_WORDS = ("哥哥", "哥哥的", "关于哥哥")
+                tasks_sorted = [
+                    t for t in tasks_sorted
+                    if not any(w in (t.get("topic") or "") for w in _BAD_TOPIC_WORDS)
+                ]
+                if not tasks_sorted:
+                    pass  # 全部被过滤 → 走后续流程
+                
                 # ★ 话题多样性：优先挑"最近没探索过的族"
                 _recent = _load_recent_explore_topics(limit=5)
                 _chosen = None

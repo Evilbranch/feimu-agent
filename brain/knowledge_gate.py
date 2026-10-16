@@ -33,11 +33,11 @@ _CHITCHAT_PATTERNS = [
     r"^吃饭了吗", r"^吃了吗",
     r"^睡了?吗",
     r"^怎么样", r"^怎么样啦",
-    # ★ 新增：单字/双字追问
+    # 单字/双字追问
     r"^继续$", r"^还有吗$", r"^还有呢$", r"^别的呢$",
     r"^然后呢$", r"^接着呢$", r"^再来$",
     r"^说说看$", r"^说说吧$", r"^讲讲$", r"^展开$",
-    # ★ 新增：泛问句（无具体主语）
+    # 泛问句（无具体主语）
     r"^你觉得.{0,8}(呢|吗|吧)?[？?]?$",
     r"^你认为.{0,8}(呢|吗|吧)?[？?]?$",
     r"^还有(什么|哪些).{0,12}[？?]?$",
@@ -74,11 +74,9 @@ def _match_l0_topic(user_msg):
     for topic, op in opinions.items():
         if not topic:
             continue
-        # 1. topic 直接出现在用户消息里
         if topic in s:
             score = 1.0
         else:
-            # 2. 关键词匹配
             words = re.findall(r"[\u4e00-\u9fa5]{2,}", topic)
             hit = sum(1 for w in words if w in s)
             score = hit / max(1, len(words)) if words else 0.0
@@ -92,17 +90,7 @@ def _match_l0_topic(user_msg):
 
 
 def quick_check(user_msg):
-    """快速规则判断
-
-    返回：
-    {
-        "verdict": "skip" | "check" | "search" | "chitchat",
-        "l0_topic": str | None,
-        "l0_confidence": float,
-        "l0_view": str,
-        "reason": str,
-    }
-    """
+    """快速规则判断"""
     result = {
         "verdict": "chitchat",
         "l0_topic": None,
@@ -147,46 +135,30 @@ def quick_check(user_msg):
 
 
 # ══════════════════════════════════════════════════════
-# 判断"是不是知识性问题"
+# 知识性问题判断
 # ══════════════════════════════════════════════════════
-
-# 疑问词（一句话有这些 + 是问句，才可能是知识问题）
 _QUESTION_MARKERS = [
-    "是什么", "什么是", "为什么", "为什么", "怎么样", "怎么", "如何",
+    "是什么", "什么是", "为什么", "怎么样", "怎么", "如何",
     "哪些", "哪种", "哪个", "什么地方", "什么时间", "多少",
     "能不能", "可不可以", "是否可以", "是否",
     "解释一下", "说说看", "讲讲", "介绍一下",
 ]
 
-# 第一人称陈述信号（有这些 → 是用户在表达，不是问）
 _FIRST_PERSON_SIGNALS = [
     "我觉得", "我认为", "我想", "我希望", "我希望你", "我打算",
     "我喜欢", "我不喜欢", "我想要", "我需要", "我会", "我要",
-    "我的", "我最近", "我打算",
+    "我的", "我最近",
 ]
 
 
 def _is_knowledge_query(user_msg):
-    """判断这句话是不是"知识性问题"
-
-    是知识问题：
-    - 有疑问词 + 问号（"虚拟主播怎么赚钱？"）
-    - 命令式查询（"搜一下 X"、"帮我查 X"）
-    - 直接问事实（"X 是什么"）
-
-    不是知识问题：
-    - 第一人称陈述（"我觉得 X"、"我希望 X"）
-    - 相对追问（"未来会有哪些变化"，该继承上一轮）
-    - 表达偏好/建议（"不要给自己太大压力"）
-    - 命令/请求（"帮我打开 X"）
-    - 寒暄/感受（已被 _is_chitchat 拦掉）
-    """
+    """判断这句话是不是"知识性问题" """
     if not user_msg:
         return False
 
     s = user_msg.strip()
 
-    # ═══ 0. 相对追问（无主语）→ 不是知识问题，该继承上一轮 ═══
+    # ═══ 0. 相对追问（无主语）→ 不是知识问题 ═══
     _RELATIVE_STARTS = (
         "未来", "长期", "近期", "以后", "接下来", "后面",
         "他们", "它", "这些", "那些", "这种", "那种",
@@ -194,20 +166,28 @@ def _is_knowledge_query(user_msg):
     if any(s.startswith(p) for p in _RELATIVE_STARTS) and len(s) <= 15:
         return False
 
-    # ═══ 1. 第一人称陈述 → 不是知识问题 ═══
+    # ═══ 0.5 "关于我/关于哥哥"的假设 → 不是知识问题 ═══
+    _SELF_REFLECTION_KEYWORDS = (
+        "关于我", "我是什么样", "我的性格", "我的外貌",
+        "我是谁", "关于哥哥", "哥哥是什么样",
+    )
+    if any(k in s for k in _SELF_REFLECTION_KEYWORDS):
+        return False
+
+    # ═══ 1. 第一人称陈述 ═══
     for sig in _FIRST_PERSON_SIGNALS:
         if sig in s:
             return False
 
-    # ═══ 2. "我希望你..." / "让你..." ═══
+    # ═══ 2. 我希望你 / 让你 ═══
     if s.startswith(("我希望", "想让你", "要你", "让你")):
         return False
 
-    # ═══ 3. "不要..." / "别..." ═══
+    # ═══ 3. 不要 / 别 ═══
     if s.startswith(("不要", "别", "不需要")):
         return False
 
-    # ═══ 4. 短句（< 8 字）→ 不是知识问题 ═══
+    # ═══ 4. 短句 ═══
     if len(s) < 8:
         return False
 
@@ -233,7 +213,6 @@ def _is_knowledge_query(user_msg):
     if "是什么" in s or "什么是" in s:
         return True
 
-    # ═══ 8. 其他 → 保守判断 ═══
     return False
 
 
