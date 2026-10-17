@@ -146,8 +146,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": f"bad json: {e}"})
             return
 
-        text = (data.get("text") or "").strip()
-        user_id = (data.get("user_id") or "wechat").strip()
+        # ★ 强制转换成字符串，防止前端传 ... 导致底层的类型错误
+        text = str(data.get("text") or "").strip()
+        user_id = str(data.get("user_id") or "wechat").strip()
+        
         if not text:
             self._send_json(400, {"error": "empty text"})
             return
@@ -310,12 +312,9 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def _handle_wechat_message(text):
-    """微信消息的完整处理流程。
-
-    注意：detect_event_from_text / bump_turn 由 ask_ai 内部自动调用，
-    这里不要重复调用。
-    """
-    from brain.llm import ask_ai
+    """微信消息的完整处理流程（走流式路径，对齐本地端功能）"""
+    import queue
+    from brain.streaming import ask_ai_streaming
 
     s = state.get_state()
 
@@ -332,30 +331,37 @@ def _handle_wechat_message(text):
 
     print(f"\n[API←微信] {text}")
 
-    rep = ask_ai(
-        _client, _provider, _history_ref, text, _session_start[0],
-        use_tools=True,
-        speaker="主人",
-        relation="主人",
-        source="owner",
-    )
+    # ══════════════════════════════════════════════════════
+    # 走流式路径（包含内心独白、L0 注入、openQ、反问节流、隐私保护）
+    # ══════════════════════════════════════════════════════
+    q = queue.Queue()
+    try:
+        ask_ai_streaming(
+            _client, _provider, _history_ref, text, _session_start[0],
+            speaker="主人",
+            relation="主人",
+            source="owner",
+            out_queue=q,
+        )
+    except Exception as e:
+        print(f"[API] 流式调用异常: {e}")
 
+    # 聚合流式输出
+    parts = []
+    while True:
+        try:
+            item = q.get(timeout=60)
+            if item is None:
+                break
+            if isinstance(item, str):
+                parts.append(item)
+        except queue.Empty:
+            break
+
+    rep = "".join(parts).strip()
     if not rep:
         rep = "……"
 
-    # ══════════════════════════════════════════════════════
-    # 反问硬拦截：只改发给用户的版本，history 保留原始
-    # ══════════════════════════════════════════════════════
-    try:
-        from brain.anti_reflex import apply_anti_reflex
-        _ar_fixed, _ar_hit = apply_anti_reflex(
-            rep, _history_ref, client=_client, provider=_provider
-        )
-        if _ar_hit:
-            print(f"[反问拦截] 微信路径: {rep[:40]} → {_ar_fixed[:40]}")
-            rep = _ar_fixed
-    except Exception as e:
-        print(f"[反问拦截] 异常: {e}")
 
     # KOKKI 输出审计
     try:
@@ -377,7 +383,7 @@ def _handle_wechat_message(text):
         print(f"[full_history] 异常: {e}")
 
     # ══════════════════════════════════════════════════════
-    # L2 情景记忆写入（微信路径，之前漏了）
+    # L2 情景记忆
     # ══════════════════════════════════════════════════════
     try:
         from brain.episodic import judge_should_record, record_episode
@@ -403,7 +409,6 @@ def _handle_wechat_message(text):
     except Exception as e:
         print(f"[L2-微信] 异常: {e}")
 
-
     # L2：她自己的话影响情绪
     try:
         from brain.self_mood import apply_own_speech_impact
@@ -417,7 +422,7 @@ def _handle_wechat_message(text):
     except Exception as e:
         print(f"[API-L2] 异常: {e}")
 
-    # L4 自语（微信端不推，但影响情绪）
+    # L4 自语
     try:
         from brain.self_reflect import reflect_on_own_speech
         _ = reflect_on_own_speech(_client, _provider, rep, source="wechat")

@@ -265,3 +265,47 @@ def deep_reflect_once(client, provider, force=False):
         "new_value": cleaned["new_value"],
         "reason": cleaned["reason"],
     })
+
+def micro_reflect_daily(client, provider):
+    """每日微反思：把今天发生的最有情绪价值的 L2 提炼成一句 L0 认知"""
+    import datetime as _dt
+    from brain import l0_model
+    from brain.episodic import get_today_episodes
+    
+    eps = get_today_episodes()
+    if not eps:
+        return
+        
+    # 找今天 importance 最高的前 3 条
+    eps.sort(key=lambda x: -x.get("importance", 0))
+    top_eps = eps[:3]
+    
+    eps_text = "\n".join([f"- {e['content']}" for e in top_eps])
+    
+    prompt = (
+        "今天发生了一些事，请提炼出你对这一天最核心的自我认知。\n"
+        f"【今天的事】\n{eps_text}\n\n"
+        "用1句话回答（必须是以'我'开头的陈述句，30字以内）："
+    )
+    
+    try:
+        r = client.chat.completions.create(
+            model=provider["model"],
+            messages=[{"role": "user", "content": prompt}],
+            timeout=20, temperature=0.7, max_tokens=50,
+            extra_body={"keep_alive": "30m", "think": False},
+        )
+        text = (r.choices[0].message.content or "").strip()
+        if not text or len(text) < 5 or len(text) > 50:
+            return
+            
+        # 写进 L0 的特殊话题下
+        action, op = l0_model.upsert_opinion(
+            topic="我今天的状态",
+            new_view=text,
+            confidence=0.6,
+            source="internalization"
+        )
+        print(f"[微反思] 今日认知已更新: {text}")
+    except Exception as e:
+        print(f"[微反思] 失败: {e}")

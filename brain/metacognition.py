@@ -100,12 +100,8 @@ def _save_last_adj(adj, ts):
 
 def _resolve_adjustment(new_adj):
     """防横跳：任何调整必须持有 ADJUSTMENT_HOLD 秒才能被替换
-
-    规则：
-    - 同向 → 刷新时间戳，保持
-    - 无历史 → 直接采用
-    - 有历史且未到期 → 保持旧的（不管方向）
-    - 有历史且已到期 → 允许切换
+    
+    ★ 彻底锁死：只要当前有非 none 的建议且未过期，绝不接受新建议
     """
     if new_adj == "none":
         return "none"
@@ -126,7 +122,7 @@ def _resolve_adjustment(new_adj):
         _save_last_adj(new_adj, now)
         return new_adj
 
-    # ★ 有历史且未到期 → 保持旧的
+    # ★ 有历史且未到期 → 强行保持旧的（不管方向）
     elapsed = now - last_ts
     if elapsed < ADJUSTMENT_HOLD:
         remain = int((ADJUSTMENT_HOLD - elapsed) / 60)

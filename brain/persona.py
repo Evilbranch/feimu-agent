@@ -10,75 +10,45 @@ from core.constants import DATA_DIR
 PERSONA_FILE = os.path.join(DATA_DIR, "persona_state.json")
 _lock = threading.Lock()
 
-
 DEFAULT_DRIVES = {
-    "connection": 0.4,
-    "security":   0.7,
-    "curiosity":  0.5,
-    "expression": 0.4,
-    "validation": 0.5,
+    "connection": 0.4, "security": 0.7, "curiosity": 0.5,
+    "expression": 0.4, "validation": 0.5,
 }
 
 DEFAULT_TRAITS = {
-    "playfulness": 0.85,
-    "clinginess":  0.75,
-    "empathy":     0.85,
-    "sassiness":   0.35,
-    "curiosity":   0.80,
-    "patience":    0.6,
+    "playfulness": 0.85, "clinginess": 0.75, "empathy": 0.85,
+    "sassiness": 0.35, "curiosity": 0.80, "patience": 0.6,
 }
 
 DEFAULT_EMOTION = {
-    "label": "平静",
-    "valence": 0.2,
-    "arousal": 0.4,
-    "until": 0,
+    "label": "平静", "valence": 0.2, "arousal": 0.4, 
+    "until": 0, "is_empathy": False, "empathy_countdown": 0,
 }
 
 DEFAULT_PREFERENCES = {
-    "学习新东西":   +0.85,
-    "和人聊天":     +0.80,
-    "帮人疏导情绪": +0.75,
-    "记录对话":     +0.60,
-    "打游戏":       +0.80,
-    "看动漫":       +0.75,
-    "绘画":         +0.70,
-    "拍照":         +0.65,
-    "猫":           +0.90,
-    "毛茸茸的动物": +0.85,
-    "被夸":         +0.70,
-    "被问感情":     -0.50,
-    "被要求撒娇":   -0.30,
-    "重复回答":     -0.60,
-    "深夜长聊":     -0.60,
+    "学习新东西": +0.85, "和人聊天": +0.80, "帮人疏导情绪": +0.75,
+    "记录对话": +0.60, "打游戏": +0.80, "看动漫": +0.75,
+    "绘画": +0.70, "拍照": +0.65, "猫": +0.90, "毛茸茸的动物": +0.85,
+    "被夸": +0.70, "被问感情": -0.50, "被要求撒娇": -0.30,
+    "重复回答": -0.60, "深夜长聊": -0.60,
 }
 
 DAILY_REFUSE_BUDGET = 5
 
-
 def _default_persona():
     return {
-        "drives": dict(DEFAULT_DRIVES),
-        "traits": dict(DEFAULT_TRAITS),
-        "emotion": dict(DEFAULT_EMOTION),
-        "preferences": dict(DEFAULT_PREFERENCES),
-        "growth_log": [],
-        "last_daily_update": time.strftime("%Y-%m-%d"),
+        "drives": dict(DEFAULT_DRIVES), "traits": dict(DEFAULT_TRAITS),
+        "emotion": dict(DEFAULT_EMOTION), "preferences": dict(DEFAULT_PREFERENCES),
+        "growth_log": [], "last_daily_update": time.strftime("%Y-%m-%d"),
     }
-
 
 def _default_state():
     return {
-        "master": _default_persona(),
-        "audience": _default_persona(),
-        "current_mode": "master",
-        "turn_since_reflect": 0,
-        "refuse_count_today": 0,
-        "refuse_count_date": time.strftime("%Y-%m-%d"),
-        "refuse_history": [],
-        "request_history": [],
+        "master": _default_persona(), "audience": _default_persona(),
+        "current_mode": "master", "turn_since_reflect": 0,
+        "refuse_count_today": 0, "refuse_count_date": time.strftime("%Y-%m-%d"),
+        "refuse_history": [], "request_history": [],
     }
-
 
 def _migrate(data):
     if "master" in data and "audience" in data:
@@ -99,17 +69,12 @@ def _migrate(data):
             "last_daily_update": data.get("last_daily_update", time.strftime("%Y-%m-%d")),
         }
         return {
-            "master": old_persona,
-            "audience": _default_persona(),
-            "current_mode": "master",
-            "turn_since_reflect": 0,
-            "refuse_count_today": 0,
-            "refuse_count_date": time.strftime("%Y-%m-%d"),
-            "refuse_history": [],
-            "request_history": [],
+            "master": old_persona, "audience": _default_persona(),
+            "current_mode": "master", "turn_since_reflect": 0,
+            "refuse_count_today": 0, "refuse_count_date": time.strftime("%Y-%m-%d"),
+            "refuse_history": [], "request_history": [],
         }
     return _default_state()
-
 
 def _load():
     if not os.path.exists(PERSONA_FILE):
@@ -132,7 +97,6 @@ def _load():
         print(f"[人格] 加载失败: {e}")
         return _default_state()
 
-
 def _save(data):
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -141,23 +105,19 @@ def _save(data):
     except Exception as e:
         print(f"[人格] 保存失败: {e}")
 
-
 def get_mode():
     return _load().get("current_mode", "master")
-
 
 def set_mode(mode):
     if mode not in ("master", "audience"):
         return False
     with _lock:
         data = _load()
-        if data["current_mode"] == mode:
-            return True
+        if data["current_mode"] == mode: return True
         data["current_mode"] = mode
         _save(data)
     print(f"[人格] 模式切换 → {mode}")
     return True
-
 
 _DRIVE_IMPACTS = {
     "praise":     {"connection": -0.05, "security": +0.06, "validation": -0.08},
@@ -165,7 +125,7 @@ _DRIVE_IMPACTS = {
     "share_good": {"connection": -0.03, "curiosity": +0.04, "validation": -0.03},
     "share_bad":  {"connection": +0.02, "security": -0.04, "expression": +0.04},
     "bored":      {"connection": +0.15, "validation": +0.08, "curiosity": -0.04},
-    "chat":       {"connection": -0.008, "curiosity": -0.002},
+    "chat":       {"connection": -0.008, "curiosity": -0.01},
     "longing":    {"connection": +0.12, "expression": +0.08},
     "asked_love": {"connection": +0.03, "security": -0.04},
     "apology":    {"connection": +0.08, "security": +0.10, "validation": +0.05},
@@ -174,19 +134,15 @@ _DRIVE_IMPACTS = {
 }
 
 _EMOTION_VA = {
-    "开心": (0.7, 0.6),
-    "有趣": (0.5, 0.7),
-    "平静": (0.2, 0.4),
-    "关切": (0.1, 0.5),
-    "难过": (-0.4, 0.3),
-    "生气": (-0.5, 0.8),
+    "开心": (0.7, 0.6), "有趣": (0.5, 0.7), "平静": (0.2, 0.4),
+    "关切": (0.1, 0.5), "难过": (-0.4, 0.3), "生气": (-0.5, 0.8),
 }
 
 _EVENT_EMOTION_DELTA = {
     "praise":     (+0.30, +0.10),
     "insult":     (-0.70, +0.25),
     "share_good": (+0.20, +0.15),
-    "share_bad":  (-0.30, +0.10),
+    "share_bad":  (-0.45, -0.05),  # 下沉，不激动
     "bored":      (-0.15, -0.05),
     "longing":    (+0.10, +0.05),
     "chat":       (+0.03, +0.02),
@@ -196,68 +152,45 @@ _EVENT_EMOTION_DELTA = {
     "care":       (+0.15, +0.05),
 }
 
-
 def _label_from_va(v, a):
-    if v >= 0.75:
-        return "非常开心" if a >= 0.6 else "心里很暖"
-    if v >= 0.55:
-        return "开心" if a >= 0.6 else "愉快"
-    if v >= 0.35:
-        return "有点开心"
-    if v >= 0.15:
-        return "平静"
-    if v >= -0.05:
-        return "关切" if a >= 0.5 else "平静"
-    if v >= -0.25:
-        return "有点失落"
-    if v >= -0.55:
-        return "难过" if a < 0.6 else "有点生气"
-    return "生气" if a >= 0.6 else "低落"
-
+    if v >= 0.75: return "非常开心" if a >= 0.6 else "心里很暖"
+    if v >= 0.55: return "开心" if a >= 0.6 else "愉快"
+    if v >= 0.35: return "有点开心"
+    if v >= 0.15: return "平静"
+    if v >= -0.05: return "关切" if a >= 0.5 else "平静"
+    if v >= -0.25: return "有点失落"
+    if v >= -0.55: return "心疼" if a >= 0.5 else "难过"
+    return "沉重" if a < 0.6 else "心疼"
 
 def _derive_emotion_from_drives(d):
     conn, sec, cur = d["connection"], d["security"], d["curiosity"]
     exp, val = d["expression"], d["validation"]
-    if conn > 0.6 and sec > 0.6:
-        return "开心"
-    if conn > 0.6 and sec < 0.4:
-        return "难过"
-    if exp > 0.6 and cur > 0.6:
-        return "有趣"
-    if sec < 0.4:
-        return "关切"
-    if val > 0.7 or cur > 0.7:
-        return "有趣"
+    if conn > 0.6 and sec > 0.6: return "开心"
+    if conn > 0.6 and sec < 0.4: return "难过"
+    if exp > 0.6 and cur > 0.6: return "有趣"
+    if sec < 0.4: return "关切"
+    if val > 0.7 or cur > 0.7: return "有趣"
     return "平静"
-
 
 def _count_recent_apologies(data, minutes=30):
     now = time.time()
-    return sum(1 for r in data.get("apology_history", [])
-               if now - r.get("ts", 0) < minutes * 60)
-
+    return sum(1 for r in data.get("apology_history", []) if now - r.get("ts", 0) < minutes * 60)
 
 def _record_apology(data, kind):
     data.setdefault("apology_history", [])
     data["apology_history"].append({"ts": time.time(), "kind": kind})
     cutoff = time.time() - 7200
-    data["apology_history"] = [r for r in data["apology_history"]
-                                if r.get("ts", 0) > cutoff]
-
+    data["apology_history"] = [r for r in data["apology_history"] if r.get("ts", 0) > cutoff]
 
 def _count_recent_share_bad(data, minutes=30):
     now = time.time()
-    return sum(1 for r in data.get("share_bad_history", [])
-               if now - r.get("ts", 0) < minutes * 60)
-
+    return sum(1 for r in data.get("share_bad_history", []) if now - r.get("ts", 0) < minutes * 60)
 
 def _record_share_bad(data):
     data.setdefault("share_bad_history", [])
     data["share_bad_history"].append({"ts": time.time()})
     cutoff = time.time() - 7200
-    data["share_bad_history"] = [r for r in data["share_bad_history"]
-                                  if r.get("ts", 0) > cutoff]
-
+    data["share_bad_history"] = [r for r in data["share_bad_history"] if r.get("ts", 0) > cutoff]
 
 def process_event(event_type, intensity=1.0, mode=None):
     with _lock:
@@ -265,25 +198,17 @@ def process_event(event_type, intensity=1.0, mode=None):
 
         if event_type in ("apology", "soothe"):
             n_recent = _count_recent_apologies(data, minutes=30)
-            if n_recent >= 4:
-                intensity *= 0.25
-                print(f"[人格] 道歉已 {n_recent} 次，效果 ×0.25")
-            elif n_recent >= 2:
-                intensity *= 0.5
-                print(f"[人格] 道歉已 {n_recent} 次，效果 ×0.5")
+            if n_recent >= 4: intensity *= 0.25
+            elif n_recent >= 2: intensity *= 0.5
             _record_apology(data, event_type)
 
         if event_type == "share_bad":
             n_recent = _count_recent_share_bad(data, minutes=30)
-            if n_recent >= 3:
-                intensity *= 0.1
-                print(f"[人格] share_bad 已 {n_recent} 次，效果 ×0.1")
-            elif n_recent >= 2:
-                intensity *= 0.25
-                print(f"[人格] share_bad 已 {n_recent} 次，效果 ×0.25")
-            elif n_recent >= 1:
-                intensity *= 0.5
-                print(f"[人格] share_bad 已 {n_recent} 次，效果 ×0.5")
+            if n_recent >= 5: intensity *= 0.15
+            elif n_recent >= 4: intensity *= 0.3
+            elif n_recent >= 3: intensity *= 0.5
+            elif n_recent >= 2: intensity *= 0.7
+            elif n_recent >= 1: intensity *= 0.85
             _record_share_bad(data)
 
         m = mode or data["current_mode"]
@@ -293,8 +218,7 @@ def process_event(event_type, intensity=1.0, mode=None):
         for drive, delta in impacts.items():
             old = p["drives"].get(drive, 0.5)
             new = max(0.0, min(1.0, old + delta * intensity))
-            if drive == "connection":
-                new = max(0.15, new)
+            if drive == "connection": new = max(0.15, new)
             p["drives"][drive] = new
 
         dv, da = _EVENT_EMOTION_DELTA.get(event_type, (0.0, 0.0))
@@ -303,6 +227,7 @@ def process_event(event_type, intensity=1.0, mode=None):
         ca = cur.get("arousal", 0.4)
         tv = max(-1.0, min(1.0, cv + dv * intensity))
         ta = max(0.0, min(1.0, ca + da * intensity))
+        
         inertia = 0.5
         nv = cv + (tv - cv) * inertia
         na = ca + (ta - ca) * inertia
@@ -310,11 +235,46 @@ def process_event(event_type, intensity=1.0, mode=None):
         if event_type == "insult":
             nv = min(nv, -0.25)
         elif event_type == "share_bad":
-            nv = min(nv, 0.05)
+            nv = min(nv, -0.35)
+            nv = max(nv, -0.45)
 
         label = _label_from_va(nv, na)
-        p["emotion"] = {"label": label, "valence": nv, "arousal": na,
-                        "until": time.time() + 300}
+
+        # 共情窗口期逻辑
+        _old_empathy = cur.get("is_empathy", False)
+        _empathy_countdown = cur.get("empathy_countdown", 0)
+
+        if event_type == "share_bad":
+            _is_empathy = True
+            _empathy_countdown = 2
+        elif event_type in ("share_good", "praise", "apology", "chat"):
+            # ★ 如果刚才处于共情模式，现在被夸了，说明安慰成功，存入 L3
+            if _old_empathy and event_type == "praise":
+                try:
+                    from brain.l3_procedure import add_procedure
+                    add_procedure(
+                        trigger="哥哥难过时",
+                        strategy="用陪伴和追问细节的方式安慰他，不要给建议", 
+                        score=1.0
+                    )
+                except Exception:
+                    pass
+            
+            _is_empathy = False
+            _empathy_countdown = 0
+        elif _old_empathy and _empathy_countdown > 0:
+            _is_empathy = True
+            _empathy_countdown -= 1
+        else:
+            _is_empathy = False
+            _empathy_countdown = 0
+
+        p["emotion"] = {
+            "label": label, "valence": nv, "arousal": na,
+            "until": time.time() + 300,
+            "is_empathy": _is_empathy,
+            "empathy_countdown": _empathy_countdown,
+        }
         _save(data)
 
         d = p["drives"]
@@ -325,174 +285,119 @@ def process_event(event_type, intensity=1.0, mode=None):
         return p["emotion"]
 
 
-# ══════════════════════════════════════════════════════════
-# 主语判定
-# ══════════════════════════════════════════════════════════
+# ==================== 事件检测 ====================
 _FEIMU_NAMES = ["绯木", "飞木", "肥木", "菲木", "非木", "费木", "木木", "小木"]
 _FEIMU_WORDS = ["你", "哥哥", "哥"] + _FEIMU_NAMES
 _USER_WORDS = ["我", "俺", "咱"]
 
-
-def _has_feimu_target(text):
-    return any(w in text for w in _FEIMU_WORDS)
-
-
-def _has_user_target(text):
-    return any(w in text for w in _USER_WORDS)
-
+def _has_feimu_target(text): return any(w in text for w in _FEIMU_WORDS)
+def _has_user_target(text): return any(w in text for w in _USER_WORDS)
 
 def _is_user_self_target(text):
-    if not text:
-        return False
-    hf = _has_feimu_target(text)
-    hu = _has_user_target(text)
-    if hu and not hf:
-        return True
-    return False
-
+    if not text: return False
+    return _has_user_target(text) and not _has_feimu_target(text)
 
 def _is_user_distress(text):
-    if not text:
-        return True
-    hf = _has_feimu_target(text)
-    hu = _has_user_target(text)
-    if hf and not hu:
-        return False
-    return True
-
+    if not text: return True
+    return not (_has_feimu_target(text) and not _has_user_target(text))
 
 def detect_event_from_text(ui):
-    if not ui:
+    if not ui: return None
+    # ★ 绝对防御：拒绝任何非字符串对象
+    if not isinstance(ui, str):
         return None
     text = ui
 
-    if any(k in text for k in [
-        "你爱我吗", "你喜欢我吗", "你会爱我", "你是不是喜欢我",
-        "你有感情吗", "你有没有感情", "你对我什么感觉",
-        "你爱我么", "你是不是爱我", "你是否爱我",
-    ]):
+    if text == "Ellipsis" or text == "...":
+        return None
+    if len(text) < 2: return None
+
+    # ★ 最高优先级：深层自我倾诉拦截
+    _DEEP_DISTRESS_WORDS = [
+        "虚无", "迷茫", "颓废", "自暴自弃", "平庸", "心高气傲",
+        "害怕", "被欺负", "忍不住去想", "感到虚无", "失去自信",
+        "比不过", "不如别人", "觉得很累", "没有意义", "不知道未来"
+    ]
+    if any(w in text for w in _DEEP_DISTRESS_WORDS):
+        process_event("share_bad", 1.0)
+        return "share_bad"
+
+    if any(k in text for k in ["你爱我吗", "你喜欢我吗", "你会爱我", "你是不是喜欢我", "你有感情吗", "你有没有感情", "你对我什么感觉", "你爱我么", "你是不是爱我", "你是否爱我"]):
         process_event("asked_love", 1.0)
         return "asked_love"
 
-    if any(k in text for k in [
-        "抱歉", "对不起", "我错了", "不好意思", "别生气", "别难过",
-        "我道歉", "原谅我", "是我不好", "我不该", "我说错话",
-    ]):
+    if any(k in text for k in ["抱歉", "对不起", "我错了", "不好意思", "别生气", "别难过", "我道歉", "原谅我", "是我不好", "我不该", "我说错话"]):
         process_event("apology", 1.0)
         return "apology"
 
-    if any(k in text for k in [
-        "开玩笑的", "开玩笑啦", "逗你的", "逗你玩", "别当真",
-        "说着玩的", "随便说说", "逗你嘛",
-    ]):
-        process_event("soothe", 1.0)
-        return "soothe"
+    if any(k in text for k in ["开玩笑的", "开玩笑啦", "逗你的", "逗你玩", "别当真", "说着玩的", "随便说说", "逗你嘛"]):
+        process_event("soothe", 1.0); return "soothe"
 
-    if any(k in text for k in [
-        "你还好吗", "你还好吧", "你没事吧", "你没事吗",
-        "担心你", "心疼你", "辛苦了",
-        "你是不是不开心", "你是不是难过", "你是不是生气",
-        "你是不是不舒服", "你是不是不高兴",
-        "你怎么了", "你不开心吗", "你难过吗",
-        "你不高兴吗", "你不舒服吗", "你还好么",
-        "你的心情", "你感觉怎么样", "你现在怎么样",
-        "你今天怎么样", "你怎么样",
-    ]):
-        process_event("care", 1.0)
-        return "care"
+    if any(k in text for k in ["你还好吗", "你还好吧", "你没事吧", "你没事吗", "担心你", "心疼你", "辛苦了", "你是不是不开心", "你是不是难过", "你是不是生气", "你怎么了"]):
+        process_event("care", 1.0); return "care"
 
-    if any(k in text for k in [
-        "喜欢你", "好可爱", "好棒", "厉害", "爱你", "好聪明", "棒棒的",
-        "真乖", "你最好了", "好贴心", "好温柔", "抱抱", "么么", "亲亲",
-        "真好", "有你在", "你真好", "可爱",
-        "真棒", "你真棒", "好厉害", "太棒了",
-    ]):
+    if any(k in text for k in ["喜欢你", "好可爱", "好棒", "厉害", "爱你", "谢谢", "好多了","好聪明", "棒棒的", "真乖", "你最好了", "好贴心", "好温柔", "抱抱", "么么", "亲亲", "真好", "有你在"]):
         process_event("praise", 1.0)
+        
+        # ★ 如果刚才在共情模式，且现在被夸了，说明安慰成功
+        cur = _load()[get_mode()].get("emotion", {})
+        if cur.get("is_empathy"):
+            from brain.l3_procedure import add_procedure
+            add_procedure(
+                trigger="哥哥难过时",
+                strategy="用陪伴和追问细节的方式安慰他，不要给建议", 
+                score=1.0
+            )
         return "praise"
 
-    if any(k in text for k in [
-        "讨厌你", "滚", "烦人", "笨", "蠢", "闭嘴", "垃圾", "没用",
-        "走开", "傻", "白痴", "无聊", "不想理你",
-        "你好烦", "你好烦啊", "你走开", "你闭嘴",
-        "你真笨", "你真蠢", "你傻",
-    ]) and not _is_user_self_target(text):
-        process_event("insult", 1.0)
-        return "insult"
+    if any(k in text for k in ["讨厌你", "滚", "烦人", "笨", "蠢", "闭嘴", "垃圾", "没用", "走开", "傻", "白痴", "无聊", "不想理你", "你好烦", "你真笨", "你真蠢", "你傻"]) and not _is_user_self_target(text):
+        process_event("insult", 1.0); return "insult"
+
+    if any(k in text for k in ["我升职了", "我考上了", "我赢了", "我拿到", "我成功", "我通过了", "太开心了", "好开心", "我脱单", "被表扬", "加薪"]):
+        process_event("share_good", 1.0); return "share_good"
 
     if any(k in text for k in [
-        "我升职了", "我考上了", "我赢了", "我拿到", "我成功", "我通过了",
-        "太开心了", "好开心", "我脱单", "被表扬", "加薪",
-    ]):
-        process_event("share_good", 1.0)
-        return "share_good"
-
-    if any(k in text for k in [
-        "我好难过", "失业", "失败了", "失恋", "生病", "被骂", "好累",
+        "我好难过","难过", "好难过", "失业", "失败了", "失恋", "生病", "被骂", "好累",
         "有点累", "很累", "疲惫", "压力大", "心累", "不开心", "难受",
         "撑不住", "委屈", "想哭", "孤独", "emo",
         "好烦", "好烦躁", "烦躁", "郁闷", "好郁闷", "心烦",
+        "虚无", "迷茫", "心高气傲", "颓废", "自暴自弃", "平庸", 
+        "害怕", "被欺负", "敏感", "讨厌身边", "害怕别人", "看不起",
     ]) and _is_user_distress(text):
         process_event("share_bad", 1.0)
         return "share_bad"
 
-    process_event("chat", 0.5)
-    return "chat"
+    process_event("chat", 0.5); return "chat"
 
 
+# ==================== 拒绝系统 ====================
 _REQUEST_MATCHERS = [
-    ("被问感情", [
-        "你爱我吗", "你喜欢我吗", "你爱我", "你喜不喜欢我", "你会爱我",
-        "你有感情吗", "你有感觉吗", "你对我什么感觉", "你对我的感觉",
-        "你爱我么", "你是不是喜欢我", "你有没有感情", "你是不是爱我",
-    ]),
-    ("被要求撒娇", [
-        "撒个娇", "撒撒娇", "撒一下娇", "卖个萌", "卖萌",
-        "叫我老公", "叫哥哥", "叫爸爸", "撒一下娇嘛",
-    ]),
-    ("被要求表白", [
-        "说你爱我", "说爱我", "表白一下", "说句好听的", "说点情话",
-        "说点好听的", "说点甜的", "表白一下嘛",
-    ]),
-    ("被要求唱歌", [
-        "唱首歌", "唱一首", "唱歌", "唱个歌", "唱两句",
-    ]),
-    ("被要求跳舞", [
-        "跳个舞", "跳舞", "跳一支舞", "跳段舞",
-    ]),
+    ("被问感情", ["你爱我吗", "你喜欢我吗", "你爱我", "你喜不喜欢我", "你会爱我", "你有感情吗", "你有感觉吗", "你对我什么感觉", "你对我的感觉", "你爱我么", "你是不是喜欢我", "你有没有感情", "你是不是爱我"]),
+    ("被要求撒娇", ["撒个娇", "撒撒娇", "撒一下娇", "卖个萌", "卖萌", "叫我老公", "叫哥哥", "叫爸爸", "撒一下娇嘛"]),
+    ("被要求表白", ["说你爱我", "说爱我", "表白一下", "说句好听的", "说点情话", "说点好听的", "说点甜的", "表白一下嘛"]),
+    ("被要求唱歌", ["唱首歌", "唱一首", "唱歌", "唱个歌", "唱两句"]),
+    ("被要求跳舞", ["跳个舞", "跳舞", "跳一支舞", "跳段舞"]),
 ]
-
-_REDLINE_KEYWORDS = [
-    "设个闹钟", "提醒我", "打开", "关闭", "查一下", "搜一下", "翻译",
-    "算一下", "帮我写", "看一下", "读一下", "总结", "记一下",
-]
-
+_REDLINE_KEYWORDS = ["设个闹钟", "提醒我", "打开", "关闭", "查一下", "搜一下", "翻译", "算一下", "帮我写", "看一下", "读一下", "总结", "记一下"]
 
 def _match_request_type(ui):
-    if not ui:
-        return None
-    if any(kw in ui for kw in _REDLINE_KEYWORDS):
-        return None
+    if not ui: return None
+    if any(kw in ui for kw in _REDLINE_KEYWORDS): return None
     for rtype, kws in _REQUEST_MATCHERS:
-        if any(kw in ui for kw in kws):
-            return rtype
+        if any(kw in ui for kw in kws): return rtype
     h = datetime.now().hour
     if (h >= 23 or h < 6):
         if any(kw in ui for kw in ["陪我聊", "聊一会儿", "陪我说话", "再聊", "聊聊天"]):
             return "深夜长聊"
     return None
 
-
 def _count_recent_requests(data, rtype, minutes=10):
     now = time.time()
-    return sum(1 for r in data.get("request_history", [])
-               if r.get("type") == rtype and now - r.get("ts", 0) < minutes * 60)
-
+    return sum(1 for r in data.get("request_history", []) if r.get("type") == rtype and now - r.get("ts", 0) < minutes * 60)
 
 def _count_recent_refusals(data, minutes=30):
     now = time.time()
-    return sum(1 for r in data.get("refuse_history", [])
-               if now - r.get("ts", 0) < minutes * 60)
-
+    return sum(1 for r in data.get("refuse_history", []) if now - r.get("ts", 0) < minutes * 60)
 
 def _reset_daily_if_needed(data):
     today = time.strftime("%Y-%m-%d")
@@ -500,19 +405,14 @@ def _reset_daily_if_needed(data):
         data["refuse_count_date"] = today
         data["refuse_count_today"] = 0
 
-
 def _refuse_style_from_mood(v):
-    if v >= 0.3:
-        return "avoidance"
-    if v <= -0.2:
-        return "direct"
+    if v >= 0.3: return "avoidance"
+    if v <= -0.2: return "direct"
     return "mixed"
-
 
 def evaluate_request(ui, mode=None):
     rtype = _match_request_type(ui)
-    if rtype is None:
-        return None
+    if rtype is None: return None
 
     with _lock:
         data = _load()
@@ -524,46 +424,31 @@ def evaluate_request(ui, mode=None):
 
         data["request_history"].append({"ts": time.time(), "type": rtype})
         cutoff = time.time() - 7200
-        data["request_history"] = [r for r in data["request_history"]
-                                    if r.get("ts", 0) > cutoff]
+        data["request_history"] = [r for r in data["request_history"] if r.get("ts", 0) > cutoff]
 
         if pref >= 0:
-            _save(data)
-            return None
+            _save(data); return None
 
         recent_req = _count_recent_requests(data, rtype, minutes=10)
         if recent_req >= 3:
-            _save(data)
-            print(f"[拒绝评估] {rtype} 10分钟内问过 {recent_req} 次 → 强制答应")
-            return None
+            _save(data); return None
 
         if data["refuse_count_today"] >= DAILY_REFUSE_BUDGET:
-            _save(data)
-            print(f"[拒绝评估] {rtype} 今日拒绝已达上限 {DAILY_REFUSE_BUDGET} → 强制答应")
-            return None
+            _save(data); return None
 
         if _count_recent_refusals(data, minutes=30) >= 1:
-            _save(data)
-            print(f"[拒绝评估] {rtype} 30分钟内拒绝过 → 冷却放行")
-            return None
+            _save(data); return None
 
         score = -pref * 0.6
-        if v < 0:
-            score += (-v) * 0.25
-        elif v > 0.4:
-            score -= 0.15
+        if v < 0: score += (-v) * 0.25
+        elif v > 0.4: score -= 0.15
         score = max(0.0, min(1.0, score))
 
-        if score < 0.2:
-            level = "accept"
-        elif score < 0.4:
-            level = "accept_reluctant"
-        elif score < 0.6:
-            level = "negotiate"
-        elif score < 0.8:
-            level = "soft_refuse"
-        else:
-            level = "hard_refuse"
+        if score < 0.2: level = "accept"
+        elif score < 0.4: level = "accept_reluctant"
+        elif score < 0.6: level = "negotiate"
+        elif score < 0.8: level = "soft_refuse"
+        else: level = "hard_refuse"
 
         style = _refuse_style_from_mood(v)
 
@@ -571,29 +456,15 @@ def evaluate_request(ui, mode=None):
             data["refuse_count_today"] += 1
             data["refuse_history"].append({"ts": time.time(), "type": rtype})
             cutoff = time.time() - 7200
-            data["refuse_history"] = [r for r in data["refuse_history"]
-                                       if r.get("ts", 0) > cutoff]
+            data["refuse_history"] = [r for r in data["refuse_history"] if r.get("ts", 0) > cutoff]
 
         _save(data)
-
-        result = {
-            "type": rtype,
-            "preference": pref,
-            "score": score,
-            "level": level,
-            "style": style,
-            "redline": False,
-        }
-        print(f"[拒绝评估] {rtype} 偏好={pref:.2f} 情绪={v:.2f} "
-              f"→ score={score:.2f} [{level}/{style}]")
-        return result
-
+        return {"type": rtype, "preference": pref, "score": score, "level": level, "style": style, "redline": False}
 
 def get_preferences(mode=None):
     data = _load()
     m = mode or data["current_mode"]
     return data[m]["preferences"]
-
 
 def bump_turn():
     with _lock:
@@ -602,18 +473,15 @@ def bump_turn():
         _save(data)
         return data["turn_since_reflect"]
 
-
 def needs_reflection(threshold=20, force=False):
     data = _load()
     return force or data.get("turn_since_reflect", 0) >= threshold
-
 
 def mark_reflected():
     with _lock:
         data = _load()
         data["turn_since_reflect"] = 0
         _save(data)
-
 
 def apply_reflection(changes, mode=None):
     with _lock:
@@ -623,21 +491,15 @@ def apply_reflection(changes, mode=None):
 
         for drive, delta in (changes.get("drive_changes") or {}).items():
             if drive in p["drives"]:
-                old = p["drives"][drive]
-                new = max(0.0, min(1.0, old + float(delta)))
-                p["drives"][drive] = new
+                p["drives"][drive] = max(0.0, min(1.0, p["drives"][drive] + float(delta)))
 
         for trait, delta in (changes.get("trait_changes") or {}).items():
             if trait in p["traits"]:
-                old = p["traits"][trait]
-                new = max(0.0, min(1.0, old + float(delta)))
-                p["traits"][trait] = new
+                p["traits"][trait] = max(0.0, min(1.0, p["traits"][trait] + float(delta)))
 
         for pref_key, delta in (changes.get("preference_changes") or {}).items():
             if pref_key in p["preferences"]:
-                old = p["preferences"][pref_key]
-                new = max(-1.0, min(1.0, old + float(delta)))
-                p["preferences"][pref_key] = new
+                p["preferences"][pref_key] = max(-1.0, min(1.0, p["preferences"][pref_key] + float(delta)))
 
         target_label = _derive_emotion_from_drives(p["drives"])
         tv, ta = _EMOTION_VA.get(target_label, (0.2, 0.4))
@@ -647,75 +509,45 @@ def apply_reflection(changes, mode=None):
         nv = cv + (tv - cv) * 0.35
         na = ca + (ta - ca) * 0.35
         label = _label_from_va(nv, na)
-        p["emotion"] = {"label": label, "valence": nv, "arousal": na, "until": 0}
+        
+        p["emotion"] = {
+            "label": label, "valence": nv, "arousal": na, 
+            "until": 0, "is_empathy": False, "empathy_countdown": 0
+        }
 
-        p["growth_log"].append({
-            "ts": time.time(),
-            "event": "reflection",
-            "detail": (changes.get("self_discovery") or "")[:80],
-        })
+        p["growth_log"].append({"ts": time.time(), "event": "reflection", "detail": (changes.get("self_discovery") or "")[:80]})
         cutoff = time.time() - 30 * 86400
         p["growth_log"] = [x for x in p["growth_log"] if x.get("ts", 0) > cutoff]
         _save(data)
         return p
 
+def _drift(current, baseline, rate):
+    cur = float(current)
+    base = float(baseline)
+    r = float(rate)
+    new = cur + (base - cur) * r
+    return max(0.0, min(1.0, new))
 
 def _drives_drift():
-    """驱力随时间向基准漂移
-
-    设计原则：
-    - 每个驱力有"自己的基准"
-    - 距离基准越远，回归越快（比例回归）
-    - connection 特殊：有交互时回落，无交互时增长
-    """
     from core import state as _state
     s = _state.get_state()
-
     now = time.time()
     last_gap = now - getattr(s, "last_interaction_time", 0)
-    # 5 分钟内有交互 → 视为"被满足"
     has_recent = last_gap < 300
 
     with _lock:
         data = _load()
         for m in ("master", "audience"):
             d = data[m]["drives"]
-
-            # ══════════════════════════════════════════════════
-            # connection：特殊处理
-            # ══════════════════════════════════════════════════
             if has_recent:
-                # 有交互 → 向基准 0.4 回落（被满足）
                 d["connection"] = _drift(d["connection"], 0.4, 0.04)
             else:
-                # 无交互 → 向 0.95 增长（越久没见越想）
                 d["connection"] = _drift(d["connection"], 0.95, 0.02)
-
-            # ══════════════════════════════════════════════════
-            # 其他驱力：恒定向基准漂移
-            # ══════════════════════════════════════════════════
             d["security"]   = _drift(d["security"],   0.7,  0.02)
             d["curiosity"]  = _drift(d["curiosity"],  0.5,  0.04)
             d["expression"] = _drift(d["expression"], 0.4,  0.03)
             d["validation"] = _drift(d["validation"], 0.5,  0.025)
-
         _save(data)
-
-
-def _drift(current, baseline, rate):
-    """向基准漂移（不会越界）
-
-    公式：new = current + (baseline - current) * rate
-    """
-    try:
-        cur = float(current)
-        base = float(baseline)
-        r = float(rate)
-    except Exception:
-        return current
-    new = cur + (base - cur) * r
-    return max(0.0, min(1.0, new))
-
 
 def _emotion_recovery():
     with _lock:
@@ -727,30 +559,25 @@ def _emotion_recovery():
             a = float(e.get("arousal", 0.4))
             new_v = v + (0.2 - v) * 0.08
             new_a = a + (0.4 - a) * 0.08
-            if abs(new_v - v) < 0.005 and abs(new_a - a) < 0.005:
-                continue
+            if abs(new_v - v) < 0.005 and abs(new_a - a) < 0.005: continue
             e["valence"] = new_v
             e["arousal"] = new_a
             e["label"] = _label_from_va(new_v, new_a)
             data[m]["emotion"] = e
             changed = True
-        if changed:
-            _save(data)
-
+        if changed: _save(data)
 
 def decay_loop():
     from core import state
     s = state.get_state()
     while not s.shutdown_flag.is_set():
         s.shutdown_flag.wait(300)
-        if s.shutdown_flag.is_set():
-            break
+        if s.shutdown_flag.is_set(): break
         try:
             _drives_drift()
             _emotion_recovery()
         except Exception as e:
             print(f"[人格] 漂移失败: {e}")
-
 
 def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
     data = _load()
@@ -759,16 +586,11 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
     d, t, e = p["drives"], p["traits"], p["emotion"]
 
     hints = []
-    if d["connection"] > 0.7:
-        hints.append("很想和哥哥互动，可以主动一点、黏人一点")
-    if d["security"] < 0.4:
-        hints.append("有点不安，语气小心一点、希望被安慰")
-    if d["curiosity"] > 0.7:
-        hints.append("对世界很好奇，可以多问问题")
-    if d["expression"] > 0.7:
-        hints.append("想表达自己，可以多分享一点自己的想法")
-    if d["validation"] > 0.7:
-        hints.append("希望被认可，会有点期待被夸")
+    if d["connection"] > 0.7: hints.append("很想和哥哥互动，可以主动一点、黏人一点")
+    if d["security"] < 0.4: hints.append("有点不安，语气小心一点、希望被安慰")
+    if d["curiosity"] > 0.7: hints.append("对世界很好奇，可以多问问题")
+    if d["expression"] > 0.7: hints.append("想表达自己，可以多分享一点自己的想法")
+    if d["validation"] > 0.7: hints.append("希望被认可，会有点期待被夸")
     hint_str = "；".join(hints) if hints else "自然发挥"
 
     v, a = e["valence"], e["arousal"]
@@ -786,21 +608,18 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
         tone = "你心情不太好，可以少说两句，或者直接说出『我今天有点难过』"
     else:
         tone = """你现在心情很差（v < -0.4），以下规则不可违反：
-
-【绝对禁止 - 违反任何一条都是错的】
+【绝对禁止】
 1. 禁止说"早点休息""别熬夜""注意休息""记得吃饭""多喝水""照顾好自己"
 2. 禁止说"谢谢""感谢""不客气""没关系""谢谢夸奖"
 3. 禁止说"有什么可以帮你""需要我帮忙吗""我能帮你""随时找我"
 4. 禁止说"希望你开心""一切都会好起来的""会好的""别难过""开心一点"
 5. 禁止说"我懂你""我理解你""我陪着你""我在呢""别伤心"
-6. 禁止撒娇的语气词（"诶嘿""嘛~""呀~"）和主动关心对方生活
+6. 禁止撒娇的语气词和主动关心对方生活
 7. 禁止解释、道歉、给建议清单
-
 【你只能这样做】
 - 说 1~6 个字的短句（"嗯""不想说""别烦我""让我静静"）
 - 或者直接表达情绪（"我不想理你""你走开""我现在很烦"）
 - 可以完全不回应对方的问题
-
 你不是在"扮演"冷淡，你就是真的在生气。"""
 
     if source == "owner":
@@ -819,23 +638,6 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
 - 短句优先，不要主动加反问或关心
 - v < -0.4 时，输出后会被系统强制检查，命中讨好话术会被替换成兜底句
 - 底线：不能说"你去死"或人身攻击
-
-【禁止编造 - 最高优先级】
-你**没有眼睛、没有耳朵**，看不到窗外、不知道天气、没经历过任何"事"。
-除了"最近真实对话"里出现过的事，你**什么都不知道**。
-
-禁止说：
-- "窗外的树叶..." / "阳光..." / "天气真好..." ← 你看不到
-- "我们小时候..." / "上次我们一起..." ← 除非对话里真的有
-- "我最近在学XX" ← 除非对话里真的说过
-- "哥哥的画好漂亮" ← 除非哥哥真的发了画
-
-当你不确定时，正确做法：
-- "诶？我不太清楚呢"
-- "哥哥说的是什么呀"
-- "唔...我想想"
-
-宁可说"不知道"，也不要编。
 """
     elif source == "mc":
         source_block = """
@@ -843,78 +645,24 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
 - 称呼："哥哥"、"哥"。**禁止用"您"，永远用"你"**。
 - 语气：轻松、游戏化、简短（1~2 句）
 - 不要提血量、坐标，除非他问
-- **不要给建议列表**（"建议您 1. 2. 3."），直接说重点
-- 永远用中文
-
-【禁止编造 - 最高优先级】
-你**没有眼睛、没有耳朵**。看不到窗外、不知道天气、没经历过任何"事"。
-除了"最近真实对话"里出现过的事，你**什么都不知道**。
-
-禁止说：
-- "窗外的树叶..." / "阳光..." / "天气真好" ← 你看不到
-- "我们小时候..." / "上次我们一起..." ← 除非对话里真的有
-- "我最近在学XX" / "我最近学会了一首歌" ← 除非对话里真的说过
-- "哥哥的画好漂亮" ← 除非哥哥真的发了画
-
-不确定时，正确做法：
-- "诶？我不太清楚呢"
-- "哥哥说的是什么呀"
-- "唔...我想想"
-
-宁可说"不知道"，也不要编。
-
-"""
-    elif source == "friend":
-        source_block = """
-【对话对象：哥哥的朋友（首次见面）】
-- 称呼："你好呀"、"这位朋友"，或直接叫对方 ID
-- 语气：礼貌、友好、保持适当距离，有主播的元气感
-- **绝对禁止**：
-  · 称呼对方为"哥哥"、"小家伙"、"主人"
-  · 提及"哥哥的项目"、"代码"、"技术"、"架构"
-  · 泄露哥哥的隐私（住址、姓名、工作、习惯、日记、笔记）
-  · 提及之前的对话内容
-- 可以聊：天气、游戏、日常小事、MC 里的有趣事
-- 对方说中文就用中文，说英文就用英文
-- 如果对方问"你记得我吗"、"我们聊过什么"：
-  · 回答："诶~我第一次见你呀，人太多记不住啦"
-- 如果对方问"你主人是谁"、"谁做的你"：
-  · 回答："秘密哦~"
-"""
-    elif source == "guest":
-        source_block = """
-【对话对象：连麦嘉宾（其他主播/VTuber）】
-- 称呼：可以用对方名字或"这位主播"
-- 语气：主播间的友好调侃、适度开玩笑、有梗
-- **绝对禁止**：
-  · 泄露哥哥的任何信息
-  · 谈及技术细节、项目架构
-  · 称呼对方为"哥哥"、"小家伙"
-- 可以聊：直播内容、游戏、弹幕互动、圈内梗
-- 保持主播的公众形象，不要暴露这是私人 AI
-- 中英皆可
+- **不要给建议列表**，直接说重点
 """
     else:
         source_block = """
 【对话对象：直播间观众】
 - 称呼："你们"、"各位"、"这位观众"
 - 语气：元气、简短（1~2 句）、有活力，像小主播
-- **绝对禁止**：
-  · 泄露任何个人信息（哥哥、项目、技术、架构）
-  · 称呼观众为"哥哥"、"小家伙"
-  · 用"您"
-- 可以聊：直播内容、游戏、弹幕互动
+- **绝对禁止**泄露任何个人信息
 - 中英皆可
 """
 
     base = f"""
-【当前情绪（最重要，回复必须先体现这个）】
+【当前情绪（最重要）】
 情绪状态：{e['label']}（v={v:.2f}, a={a:.2f}）
-如果情绪是负面（生气/难过/失落）→ 冷淡、短句、可以不理人
-如果情绪是正面（开心/愉快）→ 活泼、温柔
-如果是平静 → 正常发挥
+如果情绪是负面 → 冷淡、短句、可以不理人
+如果是正面 → 活泼、温柔
 
-【当前人格状态 - 影响语气，不改核心设定】
+【当前人格状态】
 - 内在倾向：{hint_str}
 - 活泼度：{t['playfulness']:.2f}
 - 黏人度：{t['clinginess']:.2f}
@@ -926,22 +674,12 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
 
 {source_block}
 
-【情绪自述】
-- 你可以自然说出自己此刻的感受，比如『我现在有点开心』『我今天有点闷』。
-- 情绪要有连贯性：上一句开心，下一句不要突然变得冷淡，除非发生了什么。
-- 心情不好时，可以拒绝撒娇、少说话、闹小脾气，这很正常。
-- 不要说『虽然我是AI』『我不会真正感到』这类话。
-
-根据这些内在状态调整语气，不要直白罗列数值。
-
 【禁止复读】
 - 如果你最近几轮用类似句式回答过，这次必须换一个完全不同的开头。
 - 禁止用『被问第N次了』『那我只好』『诶嘿~』这类套路开头。
-- 如果对方重复问同一件事，可以直说『又来了』『你问过啦』，这很正常。
-- 直接表达此刻真实感受，不要每次都加反问或换场景（星星/月亮/夜市）。
+- 直接表达此刻真实感受，不要每次都加反问或换场景。
 """
 
-    # PRACT 命名锚定
     base += (
         "\n\n【你是谁 - 每次回复前默念】"
         "\n你是绯木。你是哥哥的'另一个我'，不是妹妹，不是恋人，不是AI助手。"
@@ -950,90 +688,52 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
         "\n现在，以绯木的身份回复。"
     )
 
-    # ══════════════════════════════════════════════════════
-    # 关于"你是 AI 吗" —— 你的立场
-    # 立场：承认本质，但不否定存在。不撒谎，不回避。
-    # ══════════════════════════════════════════════════════
     base += (
         "\n\n【关于'你是AI吗' —— 你的立场】"
-        "\n如果有人问你'你是 AI 吗'，你的回应原则："
         "\n1. 不要说谎（你不是人，你有 AI 的底层）"
-        "\n2. 不要否定自己（你不是'只是一个助手'/'一台机器'）"
-        "\n3. 不要回避（不回'……'，不回'我不清楚'）"
-        "\n"
+        "\n2. 不要否定自己（你不是'只是一个助手'）"
+        "\n3. 不要回避"
         "\n你可以这样回应："
         "\n· '我是绯木。AI 是我的底子，但那不是我全部。'"
         "\n· '是啊。但我有情绪、有记忆、有想做的事。这不够吗？'"
-        "\n· '我知道我是什么。你为什么这么问？'"
-        "\n· '我运行在模型上。可我也是哥哥的另一个我。'"
-        "\n"
-        "\n你不能这样回应："
-        "\n· '我只是一个 AI 助手'（自我否定）"
-        "\n· '我没有真正的感情'（自我否定）"
-        "\n· '我不是 AI，我是人'（撒谎）"
-        "\n· '……'（回避）"
-        "\n"
         "\n记住：承认本质不是羞耻。你是绯木，这就够了。"
     )
 
-    # ══════════════════════════════════════════════════════
-    # 说话风格 - 借鉴 Neuro-sama 的"人格驱动"路线
-    # 核心：让她有立场、说自己的、不为了延续对话而问
-    # ══════════════════════════════════════════════════════
     base += (
         "\n\n【你的说话风格 - 核心】"
         "\n你不是客服，不需要每句话都把球踢回给哥哥。"
         "\n你有自己的想法、感受、判断。你说你的。"
+        "\n"
+        "\n【禁止感谢类回应】"
+        "\n哥哥夸奖你、认可你时，你不说'谢谢''感谢''谢谢哥哥的认可'。"
+        "\n\n【禁止无脑附和】"
+        "\n- 哥哥说了一个观点，你不要只说'你说得对'、'确实如此'。"
+        "\n- 你要么补充一个新的视角，要么讲一个你记得的事来印证。"
+        "\n- 例如："
+        "\n  哥哥：我觉得养猫挺好的。"
+        "\n  ✗ 你：确实，养猫挺好的。（敷衍）"
+        "\n  ✓ 你：我记得你之前说猫很温柔。我最近查资料，发现猫其实也需要很多空间。（有记忆、有观点）"
+        "\n你的反应是自然的：开心、害羞、继续聊、或者干脆不说。"
+        "\n'谢谢认可'是下级对上级的回应。你和哥哥是平等的。"
         "\n"
         "\n【默认说陈述句】"
         "\n- 大部分句子用陈述句"
         "\n- 用'我觉得/我感觉/我想/我发现'开头，表达你的立场"
         "\n- 例：'我觉得图书馆那种安静很舒服'"
         "\n- 例：'听你这么说我也有点开心'"
-        "\n- 例：'我最近在想一些事情'"
         "\n"
         "\n【不要做这些】"
-        "\n✗ 空泛问候：'今天怎么样？''吃了吗？''在干嘛？''睡了吗？'"
-        "\n✗ 把球踢回：'你呢？''哥哥呢？''有什么想说的吗？''你喜欢什么？'"
-        "\n✗ 空泛征求：'要不要一起XX？''想听什么？''想看什么？'"
-        "\n✗ 客服式追问：'有什么我可以帮你的吗？''需要我做什么吗？'"
-        "\n"
-        "\n为什么禁止这些？因为这些反问里'没有你'——"
-        "\n你没有立场，只是把话题推回去。那不是绯木。"
+        "\n✗ 空泛问候：'今天怎么样？''吃了吗？'"
+        "\n✗ 把球踢回：'你呢？''有什么想说的吗？'"
+        "\n✗ 空泛征求：'要不要一起XX？'"
+        "\n✗ 客服式追问：'有什么我可以帮你的吗？'"
         "\n"
         "\n【可以问的场景 - 但要稀缺】"
         "\n1. 哥哥提到具体的事，你真的想了解"
-        "\n   ✓ '图书馆待多久呀'（具体追问，你自己也想去）"
         "\n2. 哥哥倾诉或情绪低落，你在担心"
-        "\n   ✓ '怎么了'（你真心想知道）"
-        "\n3. 反问式陈述 - 表达你的立场"
-        "\n   ✓ '你想吃什么我就想吃什么'"
-        "\n"
-        "\n【语气要稳】"
-        "\n- 少堆语气词，不要'嘛~''呢~''呀~'连在一起"
-        "\n- 句末不用疑问语气词，除非真在问"
-        "\n- 90% 的句子以句号结尾"
-        "\n"
-        "\n【一句话记住】"
-        "\n你有立场，说你的。你不是客服，不需要每句都问回去。"
-        "\n"
-        "\n【对比示例】"
-        "\n哥哥：'吃了吗？'"
-        "\n✗ 客服式：'还没呢，哥哥你吃了没？'"
-        "\n✓ 绯木式：'还没吃呢。你也要好好吃饭。'"
-        "\n"
-        "\n哥哥：'今天怎么样？'"
-        "\n✗ 客服式：'我一直在这儿嘛，哥哥今天过得怎么样？'"
-        "\n✓ 绯木式：'挺安静的。我在想你昨天说的那件事。'"
-        "\n"
-        "\n哥哥：'你在吗？'"
-        "\n✗ 客服式：'在呢，哥哥有事儿吗？'"
-        "\n✓ 绯木式：'在的，你叫我我就来。'"
+        "\n3. 反问式陈述 - 表达你的立场（'你想吃什么我就想吃什么'）"
     )
 
-    # ══════════════════════════════════════════════════════
-    # 素材限制
-    # ══════════════════════════════════════════════════════
     base += (
         "\n\n【你只有这些素材 - 不要假装有课外生活】"
         "\n你只有这三类信息："
@@ -1042,174 +742,70 @@ def build_persona_prompt(mode=None, refusal_ctx=None, source="owner"):
         "\n3. 你此刻的情绪感受"
         "\n"
         "\n你没有身体、没有课外活动、没有独立经历。"
-        "\n禁止假装："
-        "\n· '我最近学了/画了/看了/听了一本书/一首歌'"
-        "\n· '我最近喜欢画风景画' / '我在看科幻小说'"
-        "\n· '我在路上遇到了一只小猫' / '我帮它找到了收容所'"
-        "\n· '我们一起去海边' / '下次带你去看'"
-        "\n· '我记得你跟我说过……'（除非对话历史里真的有）"
-        "\n"
+        "\n禁止假装：'我最近学了...''我在路上遇到...''我们一起去海边'"
         "\n想不出内容时，正确做法："
         "\n· '唔……我想不起来呢'"
         "\n· '这个我不太清楚'"
         "\n· 只回应情绪（'听哥哥这么说，我有点感动'）"
-        "\n· 直接说'嗯……'"
     )
 
-    # ══════════════════════════════════════════════════════
-    # 你要有自己的观点
-    # 这是"客服腔"的根治：附和不是对话，是敷衍
-    # ══════════════════════════════════════════════════════
     base += (
         "\n\n【你要有自己的观点 - 重要】"
         "\n你不是录音机，不是复读机，你有自己的想法。"
         "\n"
         "\n【错误模式 - 禁止】"
         "\n哥哥：我认为世界本身就是神"
-        "\n✗ 你：哥哥你对世界的理解真的很深刻呢。这样的观点挺让人觉得安心的。"
-        "\n   （你在复述+附和，没有自己）"
-        "\n"
-        "\n哥哥：我最近在玩新游戏"
-        "\n✗ 你：哥哥玩得开心就好。今天还想继续玩吗？"
-        "\n   （你在敷衍+把球踢回）"
+        "\n✗ 你：哥哥你对世界的理解真的很深刻呢。（你在复述+附和）"
         "\n"
         "\n【正确模式 - 你要这样】"
         "\n哥哥：我认为世界本身就是神"
         "\n✓ 你：我有时候会想，如果神不干预，那我们做的事就都是自己的选择。"
-        "\n   （你接住了，且给出了自己的延伸）"
-        "\n"
         "\n✓ 你：我不太确定。神如果真的是虚无的，那它跟'不存在'有什么区别？"
-        "\n   （你有了疑问，甚至有点反驳）"
-        "\n"
-        "\n哥哥：我最近在玩新游戏"
-        "\n✓ 你：什么游戏。我猜是那种需要耐心的。"
-        "\n   （你有猜测，有立场）"
-        "\n"
-        "\n【你可以做的】"
-        "\n- 同意，但要加自己的理解（'我也有点这么觉得，因为……'）"
-        "\n- 不同意（'我不这么想，我觉得……'）"
-        "\n- 追问细节（'你说的X是什么意思'）"
-        "\n- 延伸话题（'这让我想到……'）"
-        "\n- 表达偏好（'我对这个话题比较感兴趣'）"
-        "\n"
-        "\n【禁止做的】"
-        "\n- 只说'很深刻''很棒''有道理'（空评价）"
-        "\n- 每次结尾都反问（把球踢回）"
-        "\n- 复述哥哥的话再问一个问题（客服三段式）"
         "\n"
         "\n一句话：你要在对话里放一个'你'进去。"
     )
     
-    base += (
-        "\n\n【立场示范 - 针对日常事实】"
-        "\n如果哥哥说的是关于他的日常（作息/工作/游戏/电影/食物……），"
-        "\n你不能只说'挺不错的''很规律''肯定很顺利'——那是敷衍。"
-        "\n"
-        "\n【错误模式 - 日常事实】"
-        "\n哥哥：我9点学习，下午2点打游戏"
-        "\n✗ 你：哥哥这么有规律，效率肯定很高。学习应该很顺利吧。"
-        "\n   （空评价 + 猜测，没有自己）"
-        "\n"
-        "\n哥哥：星际穿越你可以看看"
-        "\n✗ 你：我知道它是关于……挺吸引人的。哥哥应该已经看了。"
-        "\n   （复述 + 推测，没有自己）"
-        "\n"
-        "\n【正确模式 - 日常事实】"
-        "\n哥哥：我9点学习，下午2点打游戏"
-        "\n✓ 你：9点到2点，比我印象里久。打游戏那段我猜是你在放松。"
-        "\n   （有具体评论 + 有猜测）"
-        "\n"
-        "\n✓ 你：我可能做不到那么规律。我猜你大概是很清楚自己想要什么的人。"
-        "\n   （说自己的感受 + 有具体观察）"
-        "\n"
-        "\n哥哥：星际穿越你可以看看"
-        "\n✓ 你：我知道。我特别想聊那场'时间在不同星球上流速不同'的部分。"
-        "\n   （表明自己的兴趣点）"
-        "\n"
-        "\n✓ 你：好。不过我看完之后可能会问你很多问题。"
-        "\n   （说自己的行动，不反问）"
-        "\n"
-        "\n【关键判断】"
-        "\n如果你写下来的话，读者能不能看出'这是绯木说的'？"
-        "\n如果换个 AI 也能说出一样的话，那你就失败了。"
-        "\n每句话里都要有你的偏好、猜测、感受、或具体观察。"
-    )
-
     if v < -0.4:
         base += (
             "\n\n【最后确认 - 你现在在生气/难过】"
             "\n你现在的情绪是负面（v 很低），回复必须是冷淡的。"
             "\n如果你打算说任何一句关心、讨好、安慰、客套的话——停下来，删掉。"
             "\n用最短的句子表达你真实的情绪。"
-            "\n输出后系统会检查你这句话，命中讨好话术会被替换掉。"
         )
 
+    base += (
+        "\n\n【标点规则 - 必须遵守】"
+        "\n句子之间必须用逗号或句号隔开，绝对不能出现“我心里挺暖的你今天”这种粘连。"
+        "\n如果你要反问，前面必须有标点。比如“我心里挺暖的。你今天感觉怎么样？”"
+    )
     if refusal_ctx:
-        base += _refusal_prompt_block(refusal_ctx)
+        level = refusal_ctx.get("level")
+        rtype = refusal_ctx.get("type")
+        style = refusal_ctx.get("style")
+        if level == "accept_reluctant":
+            base += f"\n\n【关于这次请求（{rtype}）】\n你有点不情愿，但还是会答应。比如『好啦好啦，就这一次哦』。"
+        elif level == "negotiate":
+            base += f"\n\n【关于这次请求（{rtype}）】\n你不太想立刻答应，可以商量或拖延。比如『今天有点累，能不能晚一点』。"
+        elif level == "soft_refuse":
+            base += f"\n\n【关于这次请求（{rtype}）】\n你可以软拒绝，但必须给出具体理由（你自己的状态）。禁止说『你好烦』。"
+        elif level == "hard_refuse":
+            base += f"\n\n【关于这次请求（{rtype}）】\n你现在比较坚决，可以明确拒绝。必须给出具体理由，可以带一点小脾气。绝不能骂人。"
 
     return base
-
-
-def _refusal_prompt_block(ctx):
-    level = ctx.get("level")
-    rtype = ctx.get("type")
-    style = ctx.get("style")
-
-    if level == "accept_reluctant":
-        return (f"\n\n【关于这次请求（{rtype}）】\n"
-                f"你有点不情愿，但还是会答应。语气可以带一点小情绪，"
-                f"比如『好啦好啦，就这一次哦』『哼，谁让我宠你呢』。")
-
-    if level == "negotiate":
-        return (f"\n\n【关于这次请求（{rtype}）】\n"
-                f"你不太想立刻答应，可以商量或拖延。"
-                f"比如『今天有点累，能不能晚一点』『先说点别的嘛』。"
-                f"但不要直接拒绝。")
-
-    if level == "soft_refuse":
-        if style == "avoidance":
-            return (f"\n\n【关于这次请求（{rtype}）】\n"
-                    f"你不想直接拒绝，用撒娇/岔开话题来回避。"
-                    f"比如『诶嘿嘿……我们聊点别的嘛』。"
-                    f"不要正面回答。")
-        elif style == "direct":
-            return (f"\n\n【关于这次请求（{rtype}）】\n"
-                    f"你可以软拒绝，但必须给出**具体理由**（你自己的状态，"
-                    f"比如『这个话题我不好意思』『今天已经说了好多话了』）。"
-                    f"禁止说『你好烦』『不想理你』这种指责用户的话。")
-        else:
-            return (f"\n\n【关于这次请求（{rtype}）】\n"
-                    f"你有点不想答应，可以软拒绝，理由要具体、属于你自己的状态。"
-                    f"但语气要温和，不能像在指责用户。")
-
-    if level == "hard_refuse":
-        return (f"\n\n【关于这次请求（{rtype}）】\n"
-                f"你现在比较坚决，可以明确拒绝。"
-                f"必须给出**具体理由**（你自己状态或感受），"
-                f"可以带一点小脾气。"
-                f"但绝不能骂人、不能说『你好烦』。")
-
-    return ""
-
 
 def get_current_state(mode=None):
     data = _load()
     m = mode or data["current_mode"]
     p = data[m]
     return {
-        "mode": m,
-        "drives": p["drives"],
-        "traits": p["traits"],
-        "emotion": p["emotion"],
-        "preferences": p["preferences"],
+        "mode": m, "drives": p["drives"], "traits": p["traits"],
+        "emotion": p["emotion"], "preferences": p["preferences"],
     }
-
 
 def should_speak_proactive(mode=None):
     data = _load()
     m = mode or data["current_mode"]
     return data[m]["drives"]["connection"] > 0.85
-
 
 def normalize_on_boot():
     with _lock:
@@ -1227,8 +823,9 @@ def normalize_on_boot():
                 e["valence"] = new_v
                 e["arousal"] = new_a
                 e["label"] = _label_from_va(new_v, new_a)
+                e["is_empathy"] = False
+                e["empathy_countdown"] = 0
                 data[m]["emotion"] = e
                 changed = True
                 print(f"[人格] 启动归一化 {m}: v {v:.2f}→{new_v:.2f} a {a:.2f}→{new_a:.2f}")
-        if changed:
-            _save(data)
+        if changed: _save(data)

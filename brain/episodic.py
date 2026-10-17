@@ -247,7 +247,9 @@ def retrieve_episodes(query=None, top_k=5, days_back=90, min_importance=0.3):
         last_ref = m.get("last_ref", m.get("ts", now))
         days_since_ref = (now - last_ref) / 86400
         ref_decay = max(0.3, 1.0 - days_since_ref / 60)
-        ref_score = min(1.0, refs / 5.0) * ref_decay
+        # ★ 用 sqrt 压缩：refs 从 0→20 才接近饱和
+        import math as _math
+        ref_score = min(1.0, _math.sqrt(refs / 20.0)) * ref_decay
 
         emo_match = _emotion_match(cur_v, cur_a, m.get("self_emotion"))
 
@@ -283,17 +285,55 @@ def retrieve_episodes(query=None, top_k=5, days_back=90, min_importance=0.3):
 
 
 def _bump_refs(ids):
-    """增加被引用记忆的 refs 计数"""
+    """增加被引用记忆的 refs 计数 + 衰减老 refs
+
+    ★ 跨月：遍历所有月份文件
+    """
     if not ids:
         return
+    ids_set = set(ids)
+    now = time.time()
+
     with _lock:
-        items = _load_month()
-        now = time.time()
-        for m in items:
-            if m.get("id") in ids:
-                m["refs"] = m.get("refs", 0) + 1
-                m["last_ref"] = now
-        _save_month(items)
+        # 遍历所有月份文件
+        if not os.path.exists(EPISODES_DIR):
+            return
+        for fname in os.listdir(EPISODES_DIR):
+            if not fname.endswith(".json"):
+                continue
+            path = os.path.join(EPISODES_DIR, fname)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    items = json.load(f)
+            except Exception:
+                continue
+
+            changed = False
+            for m in items:
+                # 衰减：30 天没被引用 → refs 减半
+                last_ref = m.get("last_ref", m.get("ts", now))
+                days_since = (now - last_ref) / 86400
+                if days_since > 30 and m.get("refs", 0) > 0:
+                    m["refs"] = max(0, int(m.get("refs", 0) * 0.5))
+                    m["last_ref"] = now
+                    changed = True
+
+                # 增加（★ 软上限：避免无限增长）
+                if m.get("id") in ids_set:
+                    cur = m.get("refs", 0)
+                    if cur < 10:
+                        m["refs"] = cur + 1
+                    elif cur < 30:
+                        m["refs"] = cur + 0.2
+                    # > 30 不再增长
+                    m["last_ref"] = now
+                    changed = True
+            if changed:
+                try:
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(items, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
 
 
 # ══════════════════════════════════════════════════════

@@ -368,11 +368,15 @@ FORCE_TOOL_KEYWORDS = {
     "look_at_camera": ["看看我", "看我在干嘛"],
     "look_at_screen": ["看屏幕", "屏幕上"],
     "web_search": [
-        "搜一下", "百度一下", "帮我查", "搜一搜", "搜索一下",
-        "最近有什么", "最近有什么新闻", "有什么新闻", "有什么新消息",
-        "最新消息", "最新的", "今天的新闻", "最近发生",
-        "最近怎么样", "进展如何", "今天发生了什么",
-        "查一查", "查查", "找一下", "帮我找",
+        # 明确的搜索指令
+        "搜一下", "搜一搜", "搜索一下", "帮我搜",
+        "百度一下", "百度搜", "上网查", "联网查",
+        "查一查", "查查", "帮我查", "帮我找", "找一下",
+        # 明确的内容请求（带"新闻/消息/最新"）
+        "有什么新闻", "有什么新消息", "有什么新动态",
+        "最新消息", "最新的新闻", "今天的新闻",
+        "最近发生什么", "最近发生什么事",
+        "今天发生了什么",
     ],
     "get_weather": ["天气", "气温", "下雨", "下雪", "温度", "多少度", "冷吗", "热吗"],
     "set_volume": ["音量", "静音"],
@@ -380,7 +384,8 @@ FORCE_TOOL_KEYWORDS = {
     "take_note": ["记一下", "记笔记"],
     "list_notes": ["我的笔记"],
     "delete_last_note": ["删掉最后一条笔记"],
-    "write_diary": ["总结今天", "写日记"],
+    "write_diary": ["总结今天", "写日记", "写个日记", "写一篇日记",
+                    "总结一下今天", "今天的总结", "写今天的日记"],
     "query_diary": ["昨天聊", "聊了什么"],
     "read_file": ["读一下", "打开文件"],
     "regenerate_diary": ["重写日记", "重写今天"],
@@ -403,18 +408,22 @@ FORCE_TOOL_KEYWORDS = {
 
 
 _EMOTION_EVENT_KEYWORDS = [
+    # 攻击性
     "讨厌你", "恨你", "滚", "烦人", "笨", "蠢", "闭嘴", "垃圾", "没用",
     "好烦", "走开", "傻", "白痴", "无聊", "不想理你", "讨厌",
+    # 负面倾诉
     "我好难过", "失业", "失败", "失恋", "生病", "被骂", "好累",
     "有点累", "很累", "疲惫", "压力大", "心累", "不开心", "难受",
-    "撑不住", "委屈", "想哭", "孤独",
+    "撑不住", "委屈", "想哭", "孤独", "虚无", "迷茫", "颓废", 
+    "害怕", "被欺负", "敏感", "平庸",
+    # 正面
     "好可爱", "喜欢你", "爱你", "好棒", "厉害", "好聪明", "真乖",
     "我升职了", "我考上了", "我赢了", "我成功了", "我通过了",
 ]
 
 
 def _is_emotion_event(ui):
-    if not ui:
+    if not ui or not isinstance(ui, str):
         return False
     return any(k in ui for k in _EMOTION_EVENT_KEYWORDS)
 
@@ -462,6 +471,9 @@ def is_chitchat(ui, forced_tool):
         return False
     if not ui:
         return False
+    # ★ 自我剖析类，强制走聊天，不走搜索
+    if any(k in ui for k in ["我总觉得", "我总是觉得", "我觉得别人", "为什么我总是", "我一直在想"]):
+        return True
     return True
 
 
@@ -959,6 +971,17 @@ def _ask_ai_inner(client, provider, history, ui, session_start, use_tools=True,
                 f"\n如果对方说'还有吗''别的呢''继续'，是要新的信息，"
                 f"\n不要重复你上一句说过的内容。"
             )
+        # ★ 质变点 4 D1：内部独白（非流式路径）
+        try:
+            from brain.inner_voice import generate_inner_voice, build_inner_voice_prompt
+            _voice = generate_inner_voice(client, provider, history, ui)
+            if _voice:
+                sysc += build_inner_voice_prompt(_voice)
+                msgs = [{"role": "system", "content": sysc}] + rh + [um]
+            else:
+                msgs = [{"role": "system", "content": sysc}] + rh + [um]
+        except Exception as e:
+            print(f"[内心独白] 异常: {e}")
 
         msgs = [{"role": "system", "content": sysc}] + rh + [um]
         try:

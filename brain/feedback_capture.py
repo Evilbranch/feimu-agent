@@ -122,6 +122,9 @@ def detect_feedback(user_msg, last_reply=""):
     # 4. 弱肯定（句首，且后面跟语气词或结束）
     for w in _POSITIVE_WEAK_START:
         if s == w:
+            # 孤立单字（"好"、"嗯"、"是"）→ 无指向，不视为反馈
+            if len(s) <= 1:
+                return result
             result["type"] = "positive"
             result["confidence_delta"] = _POS_DELTA
             result["reason"] = f"句首弱肯定（独占）：{w}"
