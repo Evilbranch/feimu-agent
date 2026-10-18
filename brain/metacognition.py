@@ -1,0 +1,473 @@
+"""元认知观测器 - 她观察自己最近的模式，输出调整建议"""
+import os
+import json
+import time
+import re
+import threading
+
+from datetime import datetime
+from core.constants import DATA_DIR
+from core import state
+from brain import persona as P
+from brain import inner_life as IL
+
+META_LOG_FILE = os.path.join(DATA_DIR, "meta_observations.json")
+META_HINT_FILE = os.path.join(DATA_DIR, "meta_hint.json")
+META_LAST_ADJ_FILE = os.path.join(DATA_DIR, "meta_last_adjustment.json")
+_lock = threading.Lock()
+
+META_INTERVAL = 1800        # 每 30 分钟观测一次
+MIN_LOG_COUNT = 5           # 至少 5 条日志才分析
+REVERSE_COOLDOWN = 3600     # 1 小时内不允许反转方向
+ADJUSTMENT_HOLD = 3600      # 任何调整至少持有 60 分钟才能被换掉
+
+# 相反方向映射（用于防横跳）
+_OPPOSITES = {
+    "speak_more": "speak_less",
+    "speak_less": "speak_more",
+    "slow_down": "speed_up",
+    "speed_up": "slow_down",
+}
+
+
+def _load_meta_log():
+    if not os.path.exists(META_LOG_FILE):
+        return []
+    try:
+        with open(META_LOG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
+
+
+def _save_meta_log(log):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(META_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(log, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+
+def get_meta_log(limit=10):
+    return _load_meta_log()[-limit:]
+
+
+def _save_hint(hint):
+    """把调整建议写入文件，供 inner_life 读取"""
+    try:
+        with open(META_HINT_FILE, "w", encoding="utf-8") as f:
+            json.dump(hint, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+
+def load_hint():
+    """inner_life 每次醒来时读这个"""
+    if not os.path.exists(META_HINT_FILE):
+        return None
+    try:
+        with open(META_HINT_FILE, "r", encoding="utf-8") as f:
+            hint = json.load(f)
+        # 超过 1 小时的 hint 失效
+        if time.time() - hint.get("ts", 0) > 3600:
+            return None
+        return hint
+    except:
+        return None
+
+
+# ══════════════════════════════════════════════════════════
+# 防横跳
+# ══════════════════════════════════════════════════════════
+def _load_last_adj():
+    if not os.path.exists(META_LAST_ADJ_FILE):
+        return {}
+    try:
+        with open(META_LAST_ADJ_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+
+def _save_last_adj(adj, ts):
+    try:
+        with open(META_LAST_ADJ_FILE, "w", encoding="utf-8") as f:
+            json.dump({"adjustment": adj, "ts": ts}, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+
+def _resolve_adjustment(new_adj):
+    """防横跳：任何调整必须持有 ADJUSTMENT_HOLD 秒才能被替换
+    
+    ★ 彻底锁死：只要当前有非 none 的建议且未过期，绝不接受新建议
+    """
+    if new_adj == "none":
+        return "none"
+
+    last = _load_last_adj()
+    last_adj = last.get("adjustment", "none")
+    last_ts = last.get("ts", 0)
+    now = time.time()
+
+    # 无历史 → 采用
+    if last_adj == "none" or last_ts == 0:
+        _save_last_adj(new_adj, now)
+        print(f"[元认知] 采纳调整：{new_adj}")
+        return new_adj
+
+    # 同向 → 刷新时间戳
+    if new_adj == last_adj:
+        _save_last_adj(new_adj, now)
+        return new_adj
+
+    # ★ 有历史且未到期 → 强行保持旧的（不管方向）
+    elapsed = now - last_ts
+    if elapsed < ADJUSTMENT_HOLD:
+        remain = int((ADJUSTMENT_HOLD - elapsed) / 60)
+        print(
+            f"[元认知-防横跳] 保持 {last_adj}"
+            f"（还有 {remain} 分钟才能换成 {new_adj}）"
+        )
+        return last_adj
+
+    # 已到期 → 允许切换
+    _save_last_adj(new_adj, now)
+    print(f"[元认知] 调整切换：{last_adj} → {new_adj}")
+    return new_adj
+
+
+# ══════════════════════════════════════════════════════════
+# 特征提取
+# ══════════════════════════════════════════════════════════
+def _extract_features():
+    log = IL._load_log()
+    if len(log) < MIN_LOG_COUNT:
+        return None
+
+    recent = log[-30:]
+    now = time.time()
+
+    idle_count = sum(1 for e in recent if e.get("intent") == "idle")
+    speak_count = sum(1 for e in recent if e.get("intent") == "speak")
+    explore_count = sum(1 for e in recent if e.get("intent") == "explore")
+
+    speak_times = [e["ts"] for e in recent if e.get("intent") == "speak"]
+    intervals = []
+    for i in range(1, len(speak_times)):
+        intervals.append(speak_times[i] - speak_times[i-1])
+
+    avg_interval = sum(intervals) / len(intervals) if intervals else 0
+
+    speak_contents = [e.get("content", "") for e in recent
+                      if e.get("intent") == "speak" and e.get("content")]
+
+    last_speak_min = None
+    for e in reversed(log):
+        if e.get("intent") == "speak":
+            last_speak_min = int((now - e["ts"]) / 60)
+            break
+
+    s = state.get_state()
+    idle_min = int((now - getattr(s, "last_interaction_time", 0)) / 60)
+
+    return {
+        "total": len(recent),
+        "idle_count": idle_count,
+        "speak_count": speak_count,
+        "explore_count": explore_count,
+        "avg_speak_interval_min": round(avg_interval / 60, 1) if avg_interval else None,
+        "last_speak_min": last_speak_min,
+        "idle_min": idle_min,
+        "recent_speaks": speak_contents[-5:],
+    }
+
+# ══════════════════════════════════════════════════════════
+# L0 变化提取（B：元认知接入 L0）
+# ══════════════════════════════════════════════════════════
+def _extract_l0_changes(hours=24):
+    """从 L0 提取最近变化
+
+    返回：
+    {
+        "new": [topic, ...],        最近新建的观点
+        "updated": [topic, ...],    最近更新的观点（iter > 1）
+        "low_conf": [topic, ...],   置信度低的观点
+        "total": int,               观点总数
+        "open_questions": int,      未解问题数
+    }
+    """
+    result = {
+        "new": [],
+        "updated": [],
+        "low_conf": [],
+        "total": 0,
+        "open_questions": 0,
+    }
+    try:
+        from brain.l0_model import load_self_model
+        m = load_self_model()
+        opinions = m.get("opinions", {})
+        result["total"] = len(opinions)
+        result["open_questions"] = len(m.get("open_questions", []))
+
+        cutoff = time.time() - hours * 3600
+        cutoff_iso = datetime.fromtimestamp(cutoff).strftime("%Y-%m-%dT%H:%M:%S")
+
+        for topic, op in opinions.items():
+            if not topic:
+                continue
+            created = op.get("created_at", "")
+            last_updated = op.get("last_updated", "")
+            conf = float(op.get("confidence", 0.5))
+            iter_count = int(op.get("iteration_count", 1))
+
+            # 新建（24h 内 + iter=1）
+            if created and created >= cutoff_iso and iter_count == 1:
+                result["new"].append(topic)
+            # 更新（24h 内有更新 + iter>1）
+            elif last_updated and last_updated >= cutoff_iso and iter_count > 1:
+                result["updated"].append(topic)
+
+            # 置信度低
+            if conf < 0.35:
+                result["low_conf"].append(topic)
+
+        # 限制条数
+        result["new"] = result["new"][:5]
+        result["updated"] = result["updated"][:5]
+        result["low_conf"] = result["low_conf"][:3]
+    except Exception as e:
+        print(f"[元认知] L0 提取失败: {e}")
+    return result
+
+# ══════════════════════════════════════════════════════════
+# LLM 分析
+# ══════════════════════════════════════════════════════════
+META_SYSTEM = """你是绯木。现在你要**回顾自己最近的状态**，看看有没有需要调整的地方。
+
+⚠️ 直接输出 JSON，不要思考、不要解释、不要前后缀。必须从 { 开始，到 } 结束。
+
+{
+  "assessment": "一句话评估我最近的状态",
+  "hint": "给我自己下一次决策的提示（1句话，影响我下次醒来时的判断）",
+  "force_next_speak": false,
+  "adjustment": "none | speak_more | speak_less | slow_down | speed_up"
+}
+
+【分析要点】
+- 如果最近 speak 太少（间隔 > 3 小时或完全没有）→ 建议主动一点
+- 如果最近 speak 太多（间隔 < 20 分钟）→ 建议慢下来
+- 如果最近内容重复 → 提示换话题
+- 如果一切正常 → adjustment 填 none
+
+【hint 的作用】
+你写的 hint 会被注入到你下一次醒来时的上下文里，作为"自我提醒"。
+
+⚠️ **hint 绝对不能引导你"分享经历"**——因为你没有真实的视觉、听觉、经历。
+如果你提示自己去"分享今天看到的事"，你会编造不存在的事，这是错的。
+
+✅ 可以引导的方向：
+- "最近我太沉默了，看到哥哥可以主动打个招呼"
+- "我在重复说自己想他，试试换种表达方式"
+- "保持这个节奏就很好"
+
+🚫 禁止引导的方向：
+- "分享今天看到的事物" ← 你会编造
+- "聊聊今天的经历" ← 你会编造
+- "说说遇到的人" ← 你会编造
+
+【adjustment 含义 - 频次类】
+- none：不改
+- speak_more：下次更容易主动说话
+- speak_less：下次更倾向 idle
+- slow_down：下次 next_wake 拉长
+- speed_up：下次 next_wake 缩短
+
+【adjustment 含义 - 内容类（新增）】
+- change_topic：最近话题重复，下次醒来换话题
+- go_deeper：最近聊得太表面，下次遇到哥哥聊哲学/科学时深入探讨
+- express_self：最近太附和了，下次主动表达自己的立场/感受
+- ask_specific：最近问得太泛（"在忙吗"），下次问具体的事
+
+【什么时候选内容类】
+- 最近 speak 内容出现"在忙吗""吃了吗""今天怎么样"超过 3 次 → change_topic
+- 哥哥聊了哲学/科学/深层话题，但你只是附和建议"再聊"→ go_deeper
+- 你的回复出现"你说得对""很棒""挺好的"超过 5 次 → express_self
+- 你的主动消息里"你在忙吗""干嘛呢"超过 2 次 → ask_specific
+
+【提示词里的 hint 要跟 adjustment 匹配】
+- change_topic → "下次换个话题，不要总问哥哥的作息"
+- go_deeper → "哥哥聊哲学时我可以有自己的看法，不只是附和"
+- express_self → "我可以说'我觉得'，不用每次都顺着哥哥"
+- ask_specific → "问'你今天做的项目是什么'，比'你在忙吗'更好"
+
+【关于 L0 变化 - 新增】
+如果上方显示"我最近 L0 有变化"，可以用 hint 体现：
+- 有新想法：hint 可以写"我最近在想 X，下次聊天时可以提一句"
+- 有改过的想法：hint 可以写"我对 X 的看法变了，可以分享"
+- 有想不清的：hint 可以写"X 我还没想透，下次可以问问哥哥"
+
+但**不要**每次都用，只在变化显著时用。
+如果 L0 没什么变化，就按原来的规则写 hint。
+
+只输出 JSON。"""
+
+
+def _ask_meta(client, provider, features):
+    s = state.get_state()
+    st = P.get_current_state()
+    d = st["drives"]
+    e = st["emotion"]
+
+    recent_str = "\n".join([f"  · {c[:50]}" for c in features["recent_speaks"]]) or "  （无）"
+
+    # ★ L0 变化（B）
+    _l0 = _extract_l0_changes(hours=24)
+    _l0_block = ""
+    if _l0["new"] or _l0["updated"] or _l0["low_conf"]:
+        _l0_block = "\n\n【我最近 L0 有变化】"
+        if _l0["new"]:
+            _l0_block += "\n· 新想法：\n" + "\n".join(f"  - {t}" for t in _l0["new"])
+        if _l0["updated"]:
+            _l0_block += "\n· 改过的想法：\n" + "\n".join(f"  - {t}" for t in _l0["updated"])
+        if _l0["low_conf"]:
+            _l0_block += "\n· 还没想清的：\n" + "\n".join(f"  - {t}" for t in _l0["low_conf"])
+        _l0_block += f"\n（当前共 {_l0['total']} 个观点，{_l0['open_questions']} 个未解问题）"
+
+    ctx = f"""【我现在的时间】{time.strftime('%Y年%m月%d日 %H:%M', time.localtime())}
+
+【最近 30 条内在日志统计】
+- 总计：{features['total']} 条
+- idle：{features['idle_count']} 次
+- speak：{features['speak_count']} 次
+- explore：{features['explore_count']} 次
+- 主动说话平均间隔：{features['avg_speak_interval_min']} 分钟
+- 距离上次主动：{features['last_speak_min']} 分钟前
+- 距离上次和哥哥互动：{features['idle_min']} 分钟前
+
+【我最近的主动内容】
+{recent_str}
+
+【我的当前状态】
+- 连接欲：{d['connection']:.2f}
+- 安全感：{d['security']:.2f}
+- 情绪：{e['label']}
+{_l0_block}
+
+请回顾一下，我最近的状态怎么样？"""
+
+    msgs = [
+        {"role": "system", "content": META_SYSTEM},
+        {"role": "user", "content": ctx},
+    ]
+
+    for attempt in range(2):
+        try:
+            r = client.chat.completions.create(
+                model=provider["model"],
+                messages=msgs,
+                timeout=120,
+                temperature=0.5,
+                max_tokens=400,
+                extra_body={"keep_alive": "30m", "think": False},
+            )
+            msg = r.choices[0].message
+            text = (msg.content or "").strip()
+            if not text:
+                reasoning = getattr(msg, "reasoning_content", None)
+                if reasoning:
+                    text = reasoning.strip()
+        except Exception as e:
+            print(f"[元认知] LLM 调用失败: {e}")
+            continue
+
+        if not text:
+            continue
+
+        text = re.sub(r'^```[a-zA-Z]*\s*', '', text)
+        text = re.sub(r'\s*```$', '', text)
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            continue
+
+        try:
+            return json.loads(text[start:end + 1])
+        except:
+            continue
+
+    return None
+
+
+# ══════════════════════════════════════════════════════════
+# 主循环
+# ══════════════════════════════════════════════════════════
+def _do_observation(client, provider):
+    features = _extract_features()
+    if not features:
+        return
+
+    result = _ask_meta(client, provider, features)
+    if not result:
+        print("[元认知] 分析失败")
+        return
+
+    assessment = (result.get("assessment") or "").strip()
+    hint = (result.get("hint") or "").strip()
+    force_speak = bool(result.get("force_next_speak", False))
+    adjustment = (result.get("adjustment") or "none").strip()
+
+    # 防横跳
+    adjustment = _resolve_adjustment(adjustment)
+
+    print(f"[元认知] {assessment}")
+    if hint:
+        print(f"[元认知] 自我提醒：{hint}")
+    print(f"[元认知] 调整：{adjustment}")
+
+    # 记录
+    with _lock:
+        log = _load_meta_log()
+        log.append({
+            "ts": time.time(),
+            "assessment": assessment,
+            "hint": hint,
+            "force_next_speak": force_speak,
+            "adjustment": adjustment,
+            "features": features,
+        })
+        log = log[-100:]
+        _save_meta_log(log)
+
+    # 写入 hint（供 inner_life 读取）
+    _save_hint({
+        "ts": time.time(),
+        "hint": hint,
+        "force_next_speak": force_speak,
+        "adjustment": adjustment,
+    })
+
+
+def metacognition_loop(client, provider):
+    """后台线程：每 30 分钟观测一次自己"""
+    s = state.get_state()
+    print(f"[元认知] 观测器已启动，每 {META_INTERVAL // 60} 分钟运行一次")
+
+    # 首次延迟 10 分钟
+    s.shutdown_flag.wait(600)
+    if s.shutdown_flag.is_set():
+        return
+
+    while not s.shutdown_flag.is_set():
+        try:
+            if not getattr(s, "inner_life_enabled", True):
+                s.shutdown_flag.wait(300)
+                continue
+
+            _do_observation(client, provider)
+        except Exception as e:
+            print(f"[元认知] 异常: {e}")
+
+        s.shutdown_flag.wait(META_INTERVAL)

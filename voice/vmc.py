@@ -1,0 +1,415 @@
+"""Live2D 表情控制 - VTS API 驱动（眨眼、呼吸、头部微动、情绪、口型同步）"""
+import os
+import json
+import time
+import math
+import random
+import socket
+import threading
+import numpy as np
+import websocket
+from core.constants import (DATA_DIR, VMC_ENABLED, BLINK_INVERTED,
+    BLINK_MIN_INTERVAL, BLINK_MAX_INTERVAL, BLINK_DURATION,
+    EMOTION_KEYWORDS)
+from core import state
+
+# VTube Studio API 连接配置
+VTS_HOST = "localhost"
+VTS_PORT = 8001
+TOKEN_FILE = os.path.join(DATA_DIR, "vts_token.json")
+PLUGIN_NAME = "FeimuPlugin"
+PLUGIN_DEV = "FeimuProject"
+
+# ⚠️ VTS 追踪参数名（范围全部 0~1，除了 FaceAngle）
+P_EYE_L = "EyeOpenLeft"
+P_EYE_R = "EyeOpenRight"
+P_ANGLE_X = "FaceAngleX"        # -30~30
+P_ANGLE_Y = "FaceAngleY"
+P_ANGLE_Z = "FaceAngleZ"
+P_MOUTH_OPEN = "MouthOpen"
+P_MOUTH_SMILE = "MouthSmile"
+P_BROW = "Brows"
+P_ANGRY = "FaceAngry"
+
+# 情绪 → VTS 追踪参数映射（基础表情）
+EMOTION_PARAMS = {
+    "开心": {P_MOUTH_SMILE: 0.8,  P_BROW: 0.5, P_ANGRY: 0.0},
+    "难过": {P_MOUTH_SMILE: 0.0,  P_BROW: 0.3, P_ANGRY: 0.2},
+    "生气": {P_MOUTH_SMILE: 0.0,  P_BROW: 0.8, P_ANGRY: 0.9},
+    "有趣": {P_MOUTH_SMILE: 0.9,  P_BROW: 0.6, P_ANGRY: 0.0},
+    "关切": {P_MOUTH_SMILE: 0.3,  P_BROW: 0.4, P_ANGRY: 0.1},
+    "失落": {P_MOUTH_SMILE: 0.0,  P_BROW: 0.3, P_ANGRY: 0.15},
+    "平静": {P_MOUTH_SMILE: 0.0,  P_BROW: 0.0, P_ANGRY: 0.0},
+}
+
+# 全局情绪状态
+_current_emotion = "平静"
+_is_speaking = False
+
+def detect_emotion(text):
+    if not text: return "平静"
+    for emo, kws in EMOTION_KEYWORDS.items():
+        for kw in kws:
+            if kw in text: return emo
+    return "平静"
+
+def _port_open(host, port, timeout=0.5):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+# ==================== VTS API 客户端 ====================
+class _VTSClient:
+    def __init__(self):
+        self.ws = None
+        self.connected = False
+        self.token = self._load_token()
+        self.req_counter = 0
+        self._lock = threading.Lock()
+        self._token_hint_shown = False
+        self._last_close_code = None
+
+    def _load_token(self):
+        try:
+            with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+                return json.load(f).get("token")
+        except:
+            return None
+
+    def _save_token(self, token):
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                json.dump({"token": token}, f)
+        except: pass
+
+    def _send(self, msg_type, data=None):
+        if not self.ws: return
+        with self._lock:
+            self.req_counter += 1
+            rid = f"feimu_{self.req_counter}"
+        msg = {
+            "apiName": "VTubeStudioPublicAPI",
+            "apiVersion": "1.0",
+            "requestID": rid,
+            "messageType": msg_type,
+        }
+        if data: msg["data"] = data
+        try:
+            self.ws.send(json.dumps(msg))
+        except Exception:
+            pass
+
+    def _on_open(self, ws):
+        print("[VTS] 已连接到 VTube Studio")
+        if self.token:
+            self._auth()
+        else:
+            self._req_token()
+
+    def _on_message(self, ws, msg):
+        try:
+            data = json.loads(msg)
+            t = data.get("messageType", "")
+            if t == "AuthenticationTokenResponse":
+                token = data.get("data", {}).get("authenticationToken")
+                if token:
+                    self.token = token
+                    self._save_token(token)
+                    print("[VTS] 已保存授权 token")
+                    self._auth()
+            elif t == "AuthenticationResponse":
+                if data.get("data", {}).get("authenticated"):
+                    self.connected = True
+                    print("[VTS] ✅ 认证成功，Live2D 控制已激活")
+                else:
+                    print("[VTS] 认证失败，重新申请 token")
+                    self.token = None
+                    self._req_token()
+            elif t == "APIError":
+                err = data.get("data", {})
+                eid = err.get("errorID")
+                if eid == 50:
+                    self._req_token()
+        except Exception:
+            pass
+
+    def _on_error(self, ws, e): pass
+
+    def _on_close(self, ws, code, msg):
+        if self.connected:
+            print(f"[VTS] 连接断开 (code={code})")
+        self.connected = False
+        self._last_close_code = code
+
+    def _req_token(self):
+        self._send("AuthenticationTokenRequest", {
+            "pluginName": PLUGIN_NAME,
+            "pluginDeveloper": PLUGIN_DEV,
+        })
+        if not self._token_hint_shown:
+            print("[VTS] ⚠️ 请在 VTube Studio 里点击【允许】授权")
+            self._token_hint_shown = True
+
+    def _auth(self):
+        self._send("AuthenticationRequest", {
+            "pluginName": PLUGIN_NAME,
+            "pluginDeveloper": PLUGIN_DEV,
+            "authenticationToken": self.token,
+        })
+
+    def _connect_once(self):
+        url = f"ws://{VTS_HOST}:{VTS_PORT}"
+        self.ws = websocket.WebSocketApp(
+            url,
+            on_open=self._on_open,
+            on_message=self._on_message,
+            on_error=self._on_error,
+            on_close=self._on_close,
+        )
+        try:
+            self.ws.run_forever(ping_interval=45, ping_timeout=25)
+        except Exception:
+            pass
+        finally:
+            self.connected = False
+
+    def inject_params(self, params):
+        if not self.connected: return
+        inject = [{"id": k, "value": float(v), "weight": 1.0} for k, v in params.items()]
+        self._send("InjectParameterDataRequest", {
+            "faceFound": True,
+            "mode": "set",
+            "parameterValues": inject,
+        })
+
+_client = None
+
+def init():
+    global _client
+    s = state.get_state()
+    if not VMC_ENABLED: return
+
+    _client = _VTSClient()
+    s.vmc_client = _client
+
+    def _worker():
+        fail_count = 0
+        next_retry_after = 0
+        while not s.shutdown_flag.is_set():
+            if _client.connected:
+                fail_count = 0
+                time.sleep(5)
+                continue
+            if time.time() < next_retry_after:
+                time.sleep(5)
+                continue
+            if not _port_open(VTS_HOST, VTS_PORT, timeout=0.5):
+                time.sleep(10)
+                continue
+
+            print("[VTS] 检测到 VTube Studio 已启动，正在连接...")
+            t_start = time.time()
+            _client._connect_once()
+            t_duration = time.time() - t_start
+
+            if t_duration < 15:
+                fail_count += 1
+                if fail_count >= 3:
+                    next_retry_after = time.time() + 300
+                    fail_count = 0
+                else:
+                    next_retry_after = time.time() + 20
+            else:
+                fail_count = 0
+                next_retry_after = time.time() + 5
+
+    threading.Thread(target=_worker, daemon=True).start()
+    print("[VTS] 后台探测已启动")
+
+def set_expression(emo):
+    global _current_emotion
+    _current_emotion = emo
+    if not _client or not _client.connected: return
+    params = EMOTION_PARAMS.get(emo, EMOTION_PARAMS["平静"]).copy()
+    _client.inject_params(params)
+
+def head(pitch=0.0, yaw=0.0, roll=0.0):
+    if not _client or not _client.connected: return
+    x = math.degrees(yaw)
+    y = math.degrees(pitch)
+    z = math.degrees(roll)
+    _client.inject_params({P_ANGLE_X: x, P_ANGLE_Y: y, P_ANGLE_Z: z})
+
+# 兼容旧接口
+def _head(pitch=0.0, yaw=0.0, roll=0.0): head(pitch, yaw, roll)
+
+# ==================== 口型与动作实时驱动 ====================
+_mouth_stop = threading.Event()
+_mouth_thread = None
+
+def _load_envelope(path, fps=30):
+    try:
+        try:
+            import soundfile as sf
+            data, sr = sf.read(path, dtype='float32')
+        except Exception:
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(path)
+            sr = audio.frame_rate
+            samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+            if audio.channels == 2:
+                samples = samples.reshape(-1, 2).mean(axis=1)
+            data = samples / 32768.0
+    except Exception as e:
+        return None
+
+    if len(data.shape) > 1:
+        data = data.mean(axis=1)
+
+    frame_len = max(1, sr // fps)
+    n_frames = len(data) // frame_len
+    if n_frames == 0: return None
+
+    frames = data[:n_frames * frame_len].reshape(n_frames, frame_len)
+    rms = np.sqrt((frames ** 2).mean(axis=1))
+
+    peak = rms.max()
+    if peak > 1e-6:
+        rms = rms / peak
+    return rms
+
+def start_mouth_sync(audio_path, fps=30):
+    global _mouth_thread, _is_speaking
+    stop_mouth_sync()
+    _mouth_stop.clear()
+    
+    env = _load_envelope(audio_path, fps)
+    if env is None or len(env) == 0: return
+
+    _is_speaking = True
+    emo = _current_emotion
+
+    def _worker():
+        interval = 1.0 / fps
+        t0 = time.time()
+        
+        # 根据情绪设定基础动作参数
+        if emo in ("非常开心", "开心", "愉快", "有趣"):
+            base_pitch, amp, freq = 0.02, 0.08, 4.0
+        elif emo in ("难过", "失落", "心疼"):
+            base_pitch, amp, freq = -0.05, 0.02, 1.2
+        elif emo in ("生气", "不耐烦"):
+            base_pitch, amp, freq = 0.0, 0.05, 6.0
+        else: # 平静、关切
+            base_pitch, amp, freq = 0.0, 0.03, 2.5
+
+        for i, v in enumerate(env):
+            if _mouth_stop.is_set(): break
+            
+            # 1. 嘴型跟随音量
+            val = max(0.0, min(1.0, float(v) * 1.6))
+            
+            # 2. 根据音频能量动态计算头部晃动
+            el = time.time() - t0
+            # 在基础音高上，叠加由音量放大/缩小的正弦波
+            pitch = base_pitch + math.sin(el * freq) * amp * (0.5 + val * 1.5)
+            yaw = math.sin(el * (freq * 0.4)) * (amp * 0.5)
+            
+            # 3. 根据音量和情绪实时更新面部特征
+            params = {
+                P_MOUTH_OPEN: val,
+                P_ANGLE_X: math.degrees(yaw),
+                P_ANGLE_Y: math.degrees(pitch),
+                P_ANGLE_Z: 0.0
+            }
+            
+            if emo in ("开心", "有趣"):
+                params[P_MOUTH_SMILE] = 0.7 + val * 0.3
+                params[P_BROW] = 0.4 + val * 0.4
+            elif emo in ("生气", "不耐烦"):
+                params[P_BROW] = 0.6 + val * 0.4
+                params[P_ANGRY] = 0.8
+            elif emo == "平静":
+                params[P_MOUTH_SMILE] = 0.0
+                params[P_BROW] = 0.0
+                
+            if _client and _client.connected:
+                _client.inject_params(params)
+                
+            time.sleep(interval)
+            
+        set_mouth(0.0)
+        _is_speaking = False
+
+    _mouth_thread = threading.Thread(target=_worker, daemon=True)
+    _mouth_thread.start()
+
+def set_mouth(value):
+    if not _client or not _client.connected: return
+    value = max(0.0, min(1.0, float(value)))
+    _client.inject_params({P_MOUTH_OPEN: value})
+
+def stop_mouth_sync():
+    global _is_speaking
+    _mouth_stop.set()
+    set_mouth(0.0)
+    _is_speaking = False
+
+def blink(raw):
+    if not _client or not _client.connected: return
+    v = (1.0 - raw) if BLINK_INVERTED else raw
+    eye_open = 1.0 - v
+    _client.inject_params({P_EYE_L: eye_open, P_EYE_R: eye_open})
+
+# ==================== 生活模拟器 ====================
+class LifeSimulator:
+    def __init__(self):
+        self.head_yaw = 0.0
+        self.head_pitch = 0.0
+        self.head_yaw_vel = 0.0
+        self.head_pitch_vel = 0.0
+        self.next_blink = time.time() + random.uniform(BLINK_MIN_INTERVAL, BLINK_MAX_INTERVAL)
+        self.blink_start = 0.0
+        self.is_blinking = False
+        self.last_update = time.time()
+        self.breath_phase = 0.0
+        blink(0.0)
+
+    def update(self):
+        # 如果在说话，头部由 start_mouth_sync 驱动，这里只负责眨眼
+        global _is_speaking
+        now = time.time()
+        dt = now - self.last_update
+        self.last_update = now
+        
+        bv = 0.0
+        if self.is_blinking:
+            e = now - self.blink_start
+            if e < BLINK_DURATION:
+                bv = 1.0 - abs((e / BLINK_DURATION) * 2 - 1)
+            else:
+                self.is_blinking = False
+                self.next_blink = now + random.uniform(BLINK_MIN_INTERVAL, BLINK_MAX_INTERVAL)
+        else:
+            if now >= self.next_blink:
+                self.is_blinking = True
+                self.blink_start = now
+        blink(bv)
+
+        # 如果没有在说话，执行微动和呼吸
+        if not _is_speaking:
+            if not _client or not _client.connected: return
+            if random.random() < 0.005:
+                self.head_yaw = random.uniform(-0.12, 0.12)
+                self.head_pitch = random.uniform(-0.08, 0.08)
+            k, d = 3.0, 0.7
+            self.head_yaw_vel += (self.head_yaw - 0) * k * dt
+            self.head_yaw_vel *= (1 - d * dt)
+            self.head_pitch_vel += (self.head_pitch - 0) * k * dt
+            self.head_pitch_vel *= (1 - d * dt)
+            self.breath_phase += dt * 1.2
+            bo = math.sin(self.breath_phase) * 0.03
+            head(self.head_pitch + bo, self.head_yaw, 0.0)

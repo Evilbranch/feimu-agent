@@ -1,0 +1,47 @@
+# ===== 敏感数据（第二道防线，robocopy 已排除）=====
+data/
+data_wechat/
+creds.json
+creds.json.sync
+config.json
+人设.md
+交接.md
+提示词.md
+_check.txt
+requirements_raw.txt
+Modelfile
+
+# ===== 依赖 / 大文件 =====
+lib/
+bin/
+models/
+minecraft/node_modules/
+node_modules/
+*.exe
+*.dll
+unins000.*
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ===== IDE / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+logs/
+crash_*/
+
+# ===== 备份 / 归档 =====
+backup/
+backups/
+_archive/
+*.bak
+*.orig
+*.rej
