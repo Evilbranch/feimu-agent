@@ -1,91 +1,147 @@
-# 绯木 (Feimu) - 本地数字生命引擎
+# 绯木 Feimu
 
-> 一个运行在本地 16GB 消费级显卡上的 AI 虚拟伴侣/主播，目标「活得像一个人」。
+> 一个本地运行的 AI 虚拟伴侣，目标"活得像一个人"。
 
-**绯木** 不同于普通的 Chatbot 套壳。它是一个具备**多模态感知、长短期记忆演化、具身游戏交互**的本地化 Agent 框架。参照 Neuro-sama，但更侧重「数字生命」的底层工程落地。
+绯木是一个**本地部署**的 AI 伴侣项目，参照 Neuro-sama 的思路，但更侧重
+"数字生命"与"灵魂成长"——不是"演一个人"，而是"活得像一个人"。
+所有模型本地运行，无云端依赖，无隐私泄露。
 
-## 🌟 核心架构特性
+## 特性
 
-- **🧠 仿生记忆网络 (L0-L4)**：
-  - **L0 核心自我**：长期稳定的观点、偏好与价值观。
-  - **L1 语义事实 (Bi-temporal)**：具备双时态（生效/失效时间戳），防止旧事实（如“旧作息”）污染当前推理。
-  - **L2 情景记忆**：向量化检索召回，带时间衰减与情绪标记。
-- **👁️ 多模态感知总线**：
-  - **视觉双轨制**：定时帧差检测 + 提问时同步极速截图分析（云端 GLM-4V / 本地 Qwen-VL）。
-  - **游戏遥测**：通过 Node.js 接管《我的世界》底层数据，实时感知坐标、天气、血量、方块结构，实现“上帝视角”吐槽。
-- **🗣️ 全双工听觉**：
-  - 基于 WebRTC VAD，免唤醒词，支持自然插嘴与打断。
-  - 音频 RMS 驱动 VTube Studio 表情与口型。
-- **💭 冲动克制系统 (Urge)**：
-  - 视听信息不直接触发对话，而是汇入冲动队列，累积压力，由底层调度决定何时主动发言，实现拟人化克制。
-- **⚙️ 并发与防卡顿**：
-  - 全局大模型互斥锁 (`LLM_LOCK`)，主对话绝对优先，后台记忆整理排队执行。
-  - TTS 双缓冲无缝合成，彻底消灭句子间干等。
+**对话核心**
+- 流式对话（首句 ~3 秒）
+- TTS 预热（冷启动一次，之后 ~1 秒）
+- 工具调用（12 个 MC 动作工具 + 时间/计算/搜索/系统控制）
+- 多端支持（本地文本/语音、微信、Minecraft）
 
-## 🛠️ 技术栈
+**人格系统**
+- 5 驱力 + 6 特质 + 情绪 v/a + 偏好 + 拒绝系统
+- 情绪惯性 + 自然恢复
+- 道歉阻尼 / 倾诉阻尼
+- 主语判定（区分"你好烦" vs "我好烦"）
 
-- **大脑**：本地 Ollama (推荐 `qwen2.5:14b`)
-- **语音识别**：faster-whisper + webrtcvad
-- **语音合成**：GPT-SoVITS (端口 9880)
-- **虚拟形象**：VTube Studio (端口 8001)
-- **多模态**：智谱 GLM-4V-Flash / 本地 Qwen2.5-VL
-- **游戏交互**：Mineflayer (Node.js)
+**防编造 7 层防御**
+1. Prompt 层允许"不知道"
+2. 记忆锚点（LLM 可见的真实话题列表）
+3. 输出审计（正则拦截）
+4. 物理自检（回复前默念状态）
+5. 命名锚定
+6. Negative Examples
+7. 冷淡语气守卫
 
----
+**分层记忆**
+- 短期记忆（按槽位隔离）
+- L1 语义记忆（ChromaDB + 向量检索）
+- L2 情景记忆（结构化，含自我视角）
 
-## 🚀 快速开始
+**内在生活**
+- 自唤醒（她决定下次何时醒）
+- 内在三意图（发呆 / 说话 / 学习）
+- 元认知观测器
+- 时段意识（早/午/晚/深夜）
 
-### 1. 环境准备
-- Python 3.10+
-- Node.js (用于 Minecraft 桥接)
-- [Ollama](https://ollama.com/) (已启动并拉取了 `qwen2.5:14b` 模型)
-- [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) (需自行配置并启动 API)
+## 快速开始
 
-### 2. 安装依赖
+**依赖**
+- Python 3.13
+- Ollama（本地 LLM 运行时）
+- GPT-SoVITS（TTS，可选）
+
+**安装**
+
 ```bash
-# 安装 Python 依赖
+git clone https://github.com/Evilbranch/feimu-agent.git
+cd feimu-agent
 pip install -r requirements.txt
-
-# 安装 Minecraft Bot 依赖
-cd minecraft
-npm install
-cd ..
 ```
 
-### 3. 配置项目
-1. 复制 `config.example.json` 并重命名为 `config.json`。
-2. 填入你的 API Key（如智谱、DeepSeek，若纯本地运行可忽略）。
-3. **⚠️ 极其重要**：用文本编辑器打开 `启动.bat` 和 `启动API.bat`，找到 `set "TTS_PATH=..."` 这一行，将其修改为你本地 GPT-SoVITS 所在的**绝对路径**。
+**配置**
 
-### 4. 启动程序
-双击运行 `启动.bat`，在弹出的菜单中选择启动模式：
-- 选择 `2`：纯语音交互模式
-- 选择 `4`：语音 + Minecraft 联动模式
-- 选择 `11`：直播弹幕互动模式
-
-*(注：若使用 MC 联动模式，请先在游戏内对局域网开放，并将端口号输入到终端中)*
-
----
-
-## 📂 项目结构
-
-```text
-├── brain/          # 核心大脑（记忆、人格、感知、并发锁）
-├── core/           # 基础组件（API服务、全局状态）
-├── tools/          # 外部工具（MC桥接、搜索、截图）
-├── voice/          # 听觉与发声（STT、TTS、VTS驱动）
-├── minecraft/      # Mineflayer 游戏桥接层
-├── my_ai.py        # 主入口
-├── wechat_bot.py   # 微信接入端
-└── 启动.bat         # 一键启动控制台
+```bash
+cp config.example.json config.json
 ```
 
-## ⚠️ 注意事项
-- **隐私安全**：所有记忆文件（`data/`）、核心设定（`人设.md`）和 API 配置（`config.json`）已被列入 `.gitignore`，不会被上传。
-- **显存限制**：本架构针对 16GB 显存优化，若你的显存较小，建议将 `config.json` 中的模型替换为更小参数（如 `qwen2.5:3b`）。
+编辑 config.json，填入 API key（如果用云端 LLM）和路径。
 
-## 🤝 参与贡献
-欢迎提交 Pull Request 或 Issue，一起探讨“数字生命”的工程化落地！
+**启动**
 
----
-*Powered by Feimu Project - 让灵魂在硅基上生长。*
+```bash
+python my_ai.py --text    # 文本模式
+python my_ai.py --voice   # 语音模式
+```
+
+Windows 用户可直接双击 `启动.bat`，用菜单选择模式。
+
+## 命令
+
+**本地对话**
+- `/persona` — 查看人格状态
+- `/episodes` — 查看最近 7 天的情景记忆
+- `/inner` — 查看最近内在活动
+- `/memory` — 查看记忆槽位
+- `/preferences` — 查看她的偏好
+- `/mode` — 查看/切换模式
+- `/mute` `/unmute` — 静音控制
+- `/voice` `/text` — 切换输入模式
+- `/help` — 全部命令
+
+**微信端**
+- `/status` 或 "你在干嘛" — 她当前状态
+- `/recent` 或 "最近在想什么" — 最近内在活动
+- `/diary` — 今天的日记
+- `/help` — 帮助
+
+## 项目结构
+
+```
+brain/              大脑核心
+  llm.py            LLM 调用 + 工具调用
+  streaming.py      流式对话
+  persona.py        人格引擎
+  episodic.py       L2 情景记忆
+  memory.py         短期记忆 + RAG
+  inner_life.py     内在生活循环
+  reflect.py        反思引擎
+  output_audit.py   输出审计
+  tone_guard.py     冷淡语气守卫
+  l4_audit.py       L4 自语编造检查
+
+core/               基础设施
+  api_server.py     HTTP 服务
+  state.py          全局状态
+  constants.py      常量
+
+tools/              工具
+  episode_manager.py  情景记忆管理
+
+voice/              TTS / STT / Live2D
+minecraft/          MC bot
+```
+
+## 技术栈
+
+- LLM：Ollama + Qwen2.5-14B（默认）
+- TTS：GPT-SoVITS（本地 API）
+- STT：faster-whisper-small
+- RAG：ChromaDB + BGE-small-zh-v1.5
+- Live2D：VTube Studio（WebSocket API）
+- Minecraft：mineflayer
+- 微信：weixin-ilink（官方 iLink SDK）
+
+## 设计原则
+
+- 本地优先：所有推理、存储都在本地
+- 分层记忆：工作 → 情景 → 语义 → 核心自我
+- 人格一致性：情绪有惯性，行为有连续性
+- 诚实优先：宁可说"不知道"，也不编造
+- 数字生命路线：让她自己决定何时醒、说什么
+
+## 已知限制
+
+- 情景记忆（L2）写入偶有误写
+- 微信端无法主动发消息给从未交互过的用户（SDK 限制）
+- TTS 段太长时首句延迟增大（GPT-SoVITS 特性）
+
+## 许可
+
+MIT

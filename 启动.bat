@@ -3,11 +3,6 @@ chcp 65001 >nul
 title Feimu Launcher
 color 0B
 
-:: ==========================================
-:: ★ 请在此处填写你的 GPT-SoVITS 绝对路径
-set "TTS_PATH=F:\GPT-SoVITS-v2-240821"
-:: ==========================================
-
 :menu
 cls
 echo ========================================
@@ -49,14 +44,14 @@ goto menu
 :text_mode
 call :_kill_main
 timeout /t 2 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-Text" cmd /k "chcp 65001 >nul && py my_ai.py --text"
 goto end
 
 :voice_mode
 call :_kill_main
 timeout /t 2 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-Voice" cmd /k "chcp 65001 >nul && py my_ai.py --voice"
 goto end
 
@@ -70,11 +65,11 @@ if "%PORT%"=="" goto menu
 call :_kill_mc_bot
 call :_kill_main
 timeout /t 2 /nobreak >nul
-cd /d %~dp0minecraft
+cd /d F:\Ollama\minecraft
 start "MC-Bot" cmd /k "chcp 65001 >nul && set MC_PORT=%PORT%&& set MC_USERNAME=Feimu&& set MC_VERSION=1.21.1&& set MC_HOST=localhost&& node bot.js"
 echo Waiting 10s for bot to connect...
 timeout /t 10 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-Text" cmd /k "chcp 65001 >nul && py my_ai.py --text"
 goto end
 
@@ -88,11 +83,11 @@ if "%PORT%"=="" goto menu
 call :_kill_mc_bot
 call :_kill_main
 timeout /t 2 /nobreak >nul
-cd /d %~dp0minecraft
+cd /d F:\Ollama\minecraft
 start "MC-Bot" cmd /k "chcp 65001 >nul && set MC_PORT=%PORT%&& set MC_USERNAME=Feimu&& set MC_VERSION=1.21.1&& set MC_HOST=localhost&& node bot.js"
 echo Waiting 10s for bot to connect...
 timeout /t 10 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-Voice" cmd /k "chcp 65001 >nul && py my_ai.py --voice"
 goto end
 
@@ -103,14 +98,14 @@ goto end
 :start_wechat
 call :_kill_wechat
 timeout /t 2 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-WeChat" cmd /k "chcp 65001 >nul && py wechat_bot.py"
 goto end
 
 :start_danmu
 call :_kill_danmu
 timeout /t 1 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-Danmu" cmd /k "chcp 65001 >nul && py tools/danmu_listener.py"
 goto end
 
@@ -124,7 +119,7 @@ echo [2/3] Restarting Feimu...
 call :_kill_main
 call :_kill_wechat
 timeout /t 2 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-Text" cmd /k "chcp 65001 >nul && py my_ai.py --text"
 echo     Waiting 5s...
 timeout /t 5 /nobreak >nul
@@ -149,7 +144,7 @@ echo [2/3] Restarting Feimu...
 call :_kill_main
 call :_kill_wechat
 timeout /t 2 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-Voice" cmd /k "chcp 65001 >nul && py my_ai.py --voice"
 echo     Waiting 5s...
 timeout /t 5 /nobreak >nul
@@ -174,7 +169,7 @@ echo [2/3] Restarting Feimu...
 call :_kill_main
 call :_kill_danmu
 timeout /t 2 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-Voice" cmd /k "chcp 65001 >nul && py my_ai.py --voice"
 echo     Waiting 5s for brain to start...
 timeout /t 5 /nobreak >nul
@@ -200,7 +195,7 @@ call :_ensure_tts
 echo [2/4] Restarting MC Bot...
 call :_kill_mc_bot
 timeout /t 1 /nobreak >nul
-cd /d %~dp0minecraft
+cd /d F:\Ollama\minecraft
 start "MC-Bot" cmd /k "chcp 65001 >nul && set MC_PORT=%PORT%&& set MC_USERNAME=Feimu&& set MC_VERSION=1.21.1&& set MC_HOST=localhost&& node bot.js"
 timeout /t 3 /nobreak >nul
 
@@ -208,7 +203,7 @@ echo [3/4] Restarting Feimu...
 call :_kill_main
 call :_kill_danmu
 timeout /t 2 /nobreak >nul
-cd /d %~dp0
+cd /d F:\Ollama
 start "Feimu-Voice" cmd /k "chcp 65001 >nul && py my_ai.py --voice"
 echo     Waiting 5s for brain to start...
 timeout /t 5 /nobreak >nul
@@ -233,7 +228,7 @@ if "%TTS_CODE%"=="200" (
 )
 
 echo     TTS not running - starting...
-cd /d %TTS_PATH%
+cd /d F:\GPT-SoVITS-v2-240821
 start "TTS API" cmd /k "chcp 65001 >nul && .\runtime\python.exe api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS\configs\tts_infer.yaml"
 echo     Waiting 8s for TTS to load...
 timeout /t 8 /nobreak >nul
