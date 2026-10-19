@@ -59,7 +59,7 @@ def init_whisper_bg():
             print("✅ 唤醒模型加载完成")
         except Exception as e:
             print(f"⚠️ 唤醒模型失败：{e}"); s.whisper_model_wake = None
-        s.whisper_model = WhisperModel(WHISPER_MODEL_PATH, device="cuda", compute_type="float16")
+        s.whisper_model = WhisperModel(WHISPER_MODEL_PATH, device="cpu", compute_type="int8")
         print("✅ 对话模型加载完成")
     except Exception as e:
         print(f"语音识别加载失败：{e}")

@@ -72,25 +72,14 @@ def vision_loop():
         # 1. 极速帧差抓取
         small_img = grab_window_fast(game_title)
         
-        # ★ 智能兜底：如果找不到配置里的 Minecraft，就看看当前最前台的窗口
-        if not small_img or small_img == "INACTIVE":
-            from tools.screen_capture import get_active_window_title
-            active_title = get_active_window_title()
-            
-            # 定义一个排除名单：不要在终端、代码、浏览器、聊天工具里瞎看
-            _IGNORE_KEYWORDS = ["Visual Studio Code", "Ollama", "PowerShell", "CMD", "Edge", "Chrome", "微信", "QQ", "任务管理器", "Program Manager"]
-            
-            if active_title and not any(kw in active_title for kw in _IGNORE_KEYWORDS):
-                # 尝试抓取当前这个激活的窗口
-                test_img = grab_window_fast(active_title)
-                if test_img and test_img != "INACTIVE":
-                    small_img = test_img
-                    game_title = active_title  # 动态更新当前游戏标题
-        
-        if not small_img or small_img == "INACTIVE":
+        # ★ 直接斩断兜底逻辑：找不到配置里的游戏窗口，直接跳过，绝不去抓其他窗口！
+        if small_img == "INACTIVE":
             _last_hash[0] = None
             time.sleep(5)
             continue
+        if not small_img:
+    		time.sleep(5)
+   		continue
 
         # 2. 判断是否需要分析
         changed = _is_changed_fast(small_img)

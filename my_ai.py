@@ -1,5 +1,7 @@
 """绯木 - 主入口"""
 import os
+# ★ 强行禁用 CUDA，彻底根治语音识别的 cublas 报错，全部强制走 CPU
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 import sys
 import time
 import json
