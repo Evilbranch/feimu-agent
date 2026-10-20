@@ -1,3 +1,22 @@
+# ===== 🔴 核心机密与凭证（绝对不能漏！） =====
+config.json
+config.example.json
+creds.json
+creds.json.sync
+.env
+*.pem
+*.key
+
+# ===== 🔴 隐私数据与记忆库（绝对不能传！） =====
+data/
+data_wechat/
+# 如果 data 里面有你想开源的结构文件（比如空文件夹），可以用 ! 反排除，但目前建议直接全排
+# 私有设定与提示词
+人设.md
+提示词.md
+交接.md
+Modelfile
+
 # ===== 依赖 / 大文件 =====
 lib/
 bin/
@@ -30,7 +49,11 @@ crash_*/
 *.orig
 *.rej
 _check.txt
+_archive/
+backup/
 
 # ===== 运行时状态 =====
 data/.feimu_running
 data/l0/self_model_history/
+*.wav
+*.mp3
